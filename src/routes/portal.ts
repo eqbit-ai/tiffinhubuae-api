@@ -11,7 +11,7 @@ const router = Router();
 // ─── GET /api/portal/join/:merchantId — Public registration form data ───
 router.get('/join/:merchantId', async (req: Request, res: Response) => {
   try {
-    const merchant = await prisma.user.findUnique({ where: { id: req.params.merchantId } });
+    const merchant = await prisma.user.findUnique({ where: { id: req.params.merchantId as string } });
     if (!merchant) return res.status(404).json({ error: 'Merchant not found' });
 
     res.json({
@@ -27,7 +27,7 @@ router.get('/join/:merchantId', async (req: Request, res: Response) => {
 // ─── POST /api/portal/join/:merchantId — Customer self-registration ───
 router.post('/join/:merchantId', async (req: Request, res: Response) => {
   try {
-    const merchant = await prisma.user.findUnique({ where: { id: req.params.merchantId } });
+    const merchant = await prisma.user.findUnique({ where: { id: req.params.merchantId as string } });
     if (!merchant) return res.status(404).json({ error: 'Merchant not found' });
 
     const { full_name, phone_number, address, area, meal_type, roti_quantity, rice_type, dietary_preference, special_notes, registration_type } = req.body;
