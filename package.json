@@ -26,6 +26,9 @@
     "stripe": "^17.5.0",
     "twilio": "^5.3.4"
   },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
