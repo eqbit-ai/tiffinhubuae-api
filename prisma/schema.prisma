@@ -1,0 +1,643 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                        String    @id @default(cuid())
+  email                     String    @unique
+  password_hash             String
+  full_name                 String?
+  role                      String    @default("user")
+  phone                     String?
+  business_name             String?
+  logo_url                  String?
+  subscription_status       String?   @default("trial")
+  plan_type                 String?   @default("trial")
+  subscription_source       String?   @default("trial")
+  trial_ends_at             DateTime?
+  trial_cancelled_at        DateTime?
+  subscription_ends_at      DateTime?
+  current_period_end        DateTime?
+  next_billing_date         DateTime?
+  cancel_at_period_end      Boolean?  @default(false)
+  cancellation_reason       String?
+  cancelled_at              DateTime?
+  is_paid                   Boolean   @default(false)
+  last_payment_status       String?
+  stripe_customer_id        String?
+  stripe_subscription_id    String?
+  stripe_connect_account_id String?
+  payment_account_connected Boolean?  @default(false)
+  payment_verification_status String? @default("pending")
+  fee_consent_accepted      Boolean?  @default(false)
+  fee_percentage            Float?    @default(3.5)
+  whatsapp_sent_count       Int       @default(0)
+  whatsapp_limit            Int       @default(100)
+  whatsapp_notifications_enabled Boolean? @default(false)
+  whatsapp_number           String?
+  currency                  String?   @default("AED")
+  language                  String?   @default("en")
+  seasonal_mode             String?
+  seasonal_mode_start       String?
+  seasonal_mode_end         String?
+  ramadan_lunch_time        String?
+  ramadan_dinner_time       String?
+  ramadan_suhoor_time       String?
+  ramadan_iftar_time        String?
+  is_super_admin            Boolean   @default(false)
+  special_access_type       String?
+  created_at                DateTime  @default(now())
+  updated_at                DateTime  @updatedAt
+
+  customers     Customer[]
+  orders        Order[]
+  menuItems     MenuItem[]
+  tiffinSkips   TiffinSkip[]
+  ingredients   Ingredient[]
+  recipes       Recipe[]
+  suppliers     Supplier[]
+  purchases     Purchase[]
+  wastages      Wastage[]
+  activityLogs  ActivityLog[]
+  paymentLinks  PaymentLink[]
+}
+
+model Customer {
+  id                  String    @id @default(cuid())
+  full_name           String
+  phone_number        String?
+  address             String?
+  area                String?
+  meal_type           String?
+  payment_amount      Float?    @default(0)
+  payment_status      String?   @default("Pending")
+  due_date            DateTime?
+  last_payment_date   DateTime?
+  last_payment_amount Float?
+  active              Boolean   @default(true)
+  status              String?   @default("active")
+  inactive_reason     String?
+  start_date          DateTime?
+  end_date            DateTime?
+  paid_days           Int?      @default(30)
+  delivered_days      Int?      @default(0)
+  days_remaining      Int?      @default(30)
+  meals_delivered     Int?      @default(0)
+  tiffin_balance      Int?      @default(0)
+  roti_quantity        Int?      @default(2)
+  rice_type           String?   @default("None")
+  special_notes       String?
+  dietary_preference  String?   @default("Both")
+  skip_weekends       Boolean?  @default(false)
+  pause_start         DateTime?
+  pause_end           DateTime?
+  pause_start_date    String?
+  pause_resume_date   String?
+  original_end_date   String?
+  total_pause_days    Int?      @default(0)
+  pause_history       Json?
+  notification_sent   Boolean?  @default(false)
+  reminder_before_sent Boolean? @default(false)
+  reminder_after_sent  Boolean? @default(false)
+  notes               String?
+  is_trial            Boolean?  @default(false)
+  trial_end_date      DateTime?
+  trial_converted     Boolean?  @default(false)
+  is_paused           Boolean?  @default(false)
+  is_deleted          Boolean   @default(false)
+  deleted_at          DateTime?
+  portal_token        String?   @unique
+  referral_code       String?   @unique
+  referred_by         String?
+  family_group_id     String?
+  kitchen_id          String?
+  registration_source String?
+  created_by          String
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+
+  creator       User          @relation(fields: [created_by], references: [id])
+  orders        Order[]
+  tiffinSkips   TiffinSkip[]
+  paymentLinks  PaymentLink[]
+
+  @@index([created_by])
+  @@index([is_deleted])
+  @@index([portal_token])
+  @@index([referral_code])
+  @@index([family_group_id])
+}
+
+model Order {
+  id              String   @id @default(cuid())
+  customer_id     String
+  customer_name   String?
+  meal_type       String?
+  delivery_date   String?
+  order_date      String?
+  delivery_status       String?  @default("pending")
+  status                String   @default("pending")
+  out_for_delivery_time String?
+  delivery_photo        String?
+  notes                 String?
+  created_by            String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  customer User     @relation(fields: [created_by], references: [id])
+  customerRef Customer @relation(fields: [customer_id], references: [id])
+
+  @@index([created_by])
+  @@index([customer_id])
+  @@index([delivery_date])
+}
+
+model MenuItem {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  price       Float?   @default(0)
+  category    String?
+  image_url   String?
+  meal_type   String?
+  is_active   Boolean  @default(true)
+  day_of_week String?
+  created_by  String
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  creator User @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+}
+
+model TiffinSkip {
+  id                    String   @id @default(cuid())
+  customer_id           String
+  customer_name         String?
+  skip_date             String
+  meal_type             String?
+  reason                String?
+  status                String   @default("active")
+  carry_forward_applied Boolean  @default(false)
+  created_by            String
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  customer Customer @relation(fields: [customer_id], references: [id])
+  creator  User     @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+  @@index([customer_id])
+  @@index([skip_date])
+}
+
+model Notification {
+  id                String   @id @default(cuid())
+  user_email        String
+  title             String
+  message           String?
+  read              Boolean  @default(false)
+  is_read           Boolean  @default(false)
+  type              String?
+  notification_type String?
+  customer_id       String?
+  customer_name     String?
+  days_left         Int?
+  amount_to_collect Float?
+  phone_number      String?
+  email_sent        Boolean? @default(false)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@index([user_email])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  user_email  String
+  user_name   String?
+  action_type String
+  entity_type String?
+  entity_id   String?
+  description String?
+  metadata    Json?
+  created_by  String
+  created_at  DateTime @default(now())
+
+  creator User @relation(fields: [created_by], references: [id])
+
+  @@index([user_email])
+  @@index([created_by])
+}
+
+model Ingredient {
+  id                  String   @id @default(cuid())
+  name                String
+  unit                String?
+  current_stock       Float?   @default(0)
+  min_stock_threshold Float?   @default(0)
+  cost_per_unit       Float?   @default(0)
+  total_value         Float?   @default(0)
+  is_critical         Boolean  @default(false)
+  last_purchase_date  String?
+  created_by          String
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  creator  User      @relation(fields: [created_by], references: [id])
+  wastages Wastage[]
+
+  @@index([created_by])
+}
+
+model Recipe {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  meal_type       String?
+  ingredients     Json?
+  is_active       Boolean  @default(true)
+  total_cost      Float?   @default(0)
+  cost_per_serving Float?  @default(0)
+  created_by      String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  creator User @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+}
+
+model Supplier {
+  id         String   @id @default(cuid())
+  name       String
+  phone      String?
+  email      String?
+  address    String?
+  created_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  creator User @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+}
+
+model Purchase {
+  id              String   @id @default(cuid())
+  ingredient_id   String?
+  ingredient_name String?
+  quantity        Float?   @default(0)
+  unit            String?
+  cost_per_unit   Float?   @default(0)
+  total_cost      Float?   @default(0)
+  supplier_id     String?
+  supplier_name   String?
+  purchase_date   String?
+  expiry_date     String?
+  bill_image_url  String?
+  notes           String?
+  is_deleted      Boolean  @default(false)
+  created_by      String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  creator User @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+}
+
+model Wastage {
+  id              String   @id @default(cuid())
+  ingredient_id   String
+  ingredient_name String?
+  quantity        Float?   @default(0)
+  unit            String?
+  reason          String?
+  cost_value      Float?   @default(0)
+  wastage_date    String?
+  notes           String?
+  is_deleted      Boolean  @default(false)
+  created_by      String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  ingredient Ingredient @relation(fields: [ingredient_id], references: [id])
+  creator    User       @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+}
+
+model SupportTicket {
+  id         String   @id @default(cuid())
+  user_email String
+  subject    String
+  message    String?
+  status     String   @default("open")
+  priority   String?  @default("medium")
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([user_email])
+}
+
+model Subscription {
+  id                      String    @id @default(cuid())
+  user_email              String
+  plan_name               String?
+  status                  String    @default("active")
+  subscription_start_date DateTime?
+  next_billing_date       DateTime?
+  current_period_end      DateTime?
+  amount                  Float?    @default(0)
+  stripe_customer_id      String?
+  stripe_subscription_id  String?
+  payment_method_last4    String?
+  payment_method_brand    String?
+  cancelled_at            DateTime?
+  cancel_reason           String?
+  reminder_before_sent    Boolean?  @default(false)
+  reminder_after_sent     Boolean?  @default(false)
+  created_at              DateTime  @default(now())
+  updated_at              DateTime  @updatedAt
+
+  @@index([user_email])
+  @@index([stripe_subscription_id])
+}
+
+model PaymentHistory {
+  id                   String   @id @default(cuid())
+  user_email           String
+  subscription_id      String?
+  amount               Float?   @default(0)
+  currency             String?  @default("AED")
+  status               String?
+  payment_date         DateTime?
+  stripe_payment_id    String?
+  payment_method_last4 String?
+  error_message        String?
+  created_at           DateTime @default(now())
+
+  @@index([user_email])
+}
+
+model PaymentLink {
+  id                          String    @id @default(cuid())
+  customer_id                 String
+  customer_name               String?
+  amount                      Float?    @default(0)
+  currency                    String?   @default("AED")
+  description                 String?
+  status                      String    @default("pending")
+  stripe_checkout_session_id  String?
+  stripe_payment_intent_id    String?
+  checkout_url                String?
+  expires_at                  DateTime?
+  paid_at                     DateTime?
+  platform_fee_amount         Float?    @default(0)
+  net_amount                  Float?    @default(0)
+  payment_metadata            Json?
+  created_by                  String
+  created_at                  DateTime  @default(now())
+  updated_at                  DateTime  @updatedAt
+
+  customer Customer @relation(fields: [customer_id], references: [id])
+  creator  User     @relation(fields: [created_by], references: [id])
+
+  @@index([created_by])
+  @@index([customer_id])
+}
+
+model ConsumptionLog {
+  id                String   @id @default(cuid())
+  date              String?
+  recipe_id         String?
+  recipe_name       String?
+  meal_type         String?
+  quantity_prepared Int?     @default(0)
+  ingredients_used  Json?
+  total_cost        Float?   @default(0)
+  cost_per_meal     Float?   @default(0)
+  created_by        String?
+  created_at        DateTime @default(now())
+
+  @@index([created_by])
+}
+
+model MealRating {
+  id            String   @id @default(cuid())
+  customer_id   String
+  customer_name String?
+  order_id      String?
+  rating        Int      @default(0)
+  feedback      String?
+  meal_type     String?
+  meal_date     String?
+  created_by    String
+  created_at    DateTime @default(now())
+
+  @@index([created_by])
+  @@index([customer_id])
+}
+
+model Invoice {
+  id              String   @id @default(cuid())
+  invoice_number  String
+  customer_id     String
+  customer_name   String?
+  customer_phone  String?
+  customer_address String?
+  amount          Float    @default(0)
+  tax_amount      Float?   @default(0)
+  total_amount    Float    @default(0)
+  currency        String?  @default("AED")
+  period_start    DateTime?
+  period_end      DateTime?
+  status          String?  @default("generated")
+  trn_number      String?
+  business_name   String?
+  business_address String?
+  notes           String?
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([created_by])
+  @@index([customer_id])
+}
+
+model Referral {
+  id                String   @id @default(cuid())
+  referrer_id       String
+  referrer_name     String?
+  referred_id       String?
+  referred_name     String?
+  referral_code     String
+  status            String?  @default("pending")
+  discount_amount   Float?   @default(0)
+  discount_applied  Boolean? @default(false)
+  created_by        String
+  created_at        DateTime @default(now())
+
+  @@index([created_by])
+  @@index([referral_code])
+}
+
+model FamilyGroup {
+  id              String   @id @default(cuid())
+  name            String
+  primary_contact String?
+  primary_phone   String?
+  billing_amount  Float?   @default(0)
+  billing_status  String?  @default("Pending")
+  notes           String?
+  created_by      String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([created_by])
+}
+
+model Driver {
+  id              String   @id @default(cuid())
+  name            String
+  phone           String?
+  vehicle_number  String?
+  is_active       Boolean  @default(true)
+  access_code     String?  @unique
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([created_by])
+  @@index([access_code])
+}
+
+model DeliveryBatch {
+  id              String   @id @default(cuid())
+  name            String?
+  area            String?
+  driver_id       String?
+  driver_name     String?
+  delivery_date   String
+  status          String?  @default("pending")
+  total_orders    Int?     @default(0)
+  delivered_count Int?     @default(0)
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([created_by])
+  @@index([delivery_date])
+}
+
+model DeliveryItem {
+  id              String   @id @default(cuid())
+  batch_id        String
+  customer_id     String
+  customer_name   String?
+  customer_phone  String?
+  customer_address String?
+  area            String?
+  meal_type       String?
+  roti_quantity   Int?     @default(0)
+  rice_type       String?
+  special_notes   String?
+  status          String?  @default("pending")
+  delivered_at    DateTime?
+  delivery_photo  String?
+  notes           String?
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([batch_id])
+  @@index([created_by])
+}
+
+model Container {
+  id              String   @id @default(cuid())
+  customer_id     String
+  customer_name   String?
+  container_type  String?  @default("standard")
+  given_date      DateTime?
+  given_count     Int      @default(0)
+  returned_count  Int      @default(0)
+  outstanding     Int      @default(0)
+  deposit_amount  Float?   @default(0)
+  deposit_paid    Boolean? @default(false)
+  last_reminder   DateTime?
+  notes           String?
+  created_by      String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([created_by])
+  @@index([customer_id])
+}
+
+model ContainerLog {
+  id              String   @id @default(cuid())
+  container_id    String
+  customer_id     String
+  action          String
+  count           Int      @default(0)
+  notes           String?
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([container_id])
+  @@index([created_by])
+}
+
+model Kitchen {
+  id              String   @id @default(cuid())
+  name            String
+  address         String?
+  phone           String?
+  manager_name    String?
+  capacity        Int?     @default(100)
+  areas_served    String?
+  is_active       Boolean  @default(true)
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([created_by])
+}
+
+model PrepItem {
+  id              String   @id @default(cuid())
+  kitchen_id      String?
+  meal_type       String?
+  prep_date       String
+  item_name       String
+  quantity        Int      @default(0)
+  unit            String?
+  status          String?  @default("pending")
+  prepared_by     String?
+  prepared_at     DateTime?
+  notes           String?
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([created_by])
+  @@index([prep_date])
+  @@index([kitchen_id])
+}
+
+model ChatMessage {
+  id              String   @id @default(cuid())
+  customer_phone  String
+  direction       String   @default("inbound")
+  message         String
+  intent          String?
+  auto_replied    Boolean  @default(false)
+  reply_message   String?
+  created_by      String
+  created_at      DateTime @default(now())
+
+  @@index([created_by])
+  @@index([customer_phone])
+}
