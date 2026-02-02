@@ -84,10 +84,11 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
 router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
-    const { to, message, customerId } = req.body;
+    const { message, customerId } = req.body;
+    let { to } = req.body;
 
-    if (!to || !message) {
-      return res.status(400).json({ error: 'Missing required fields: to, message' });
+    if (!message) {
+      return res.status(400).json({ error: 'Missing required fields: message' });
     }
 
     if (customerId) {
@@ -95,9 +96,15 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
         where: { id: customerId, created_by: user.id, is_deleted: false },
       });
       if (!customer) return res.status(403).json({ error: 'Customer not found or access denied' });
-      if (customer.phone_number !== to) {
+      if (!to) {
+        to = customer.phone_number;
+      } else if (customer.phone_number !== to) {
         return res.status(403).json({ error: 'Phone number does not match customer record' });
       }
+    }
+
+    if (!to) {
+      return res.status(400).json({ error: 'Missing required fields: to (or customerId with phone number)' });
     }
 
     const result = await sendWhatsAppMessage({ to, message });
@@ -1812,6 +1819,74 @@ router.post('/whatsapp-agent-reply', async (req: AuthRequest, res) => {
     res.json({ success: true, intent, reply, customer_found: !!customer });
   } catch (error: any) {
     console.error('WhatsApp agent error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Auto Deduct Inventory on Delivery ────────────────────────
+router.post('/auto-deduct-on-delivery', async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+    const { orderId } = req.body;
+
+    if (!orderId) return res.status(400).json({ error: 'orderId required' });
+
+    const order = await prisma.order.findFirst({
+      where: { id: orderId, created_by: user.id },
+    });
+    if (!order) return res.json({ success: true, skipped: true, reason: 'Order not found' });
+
+    const mealType = order.meal_type;
+    if (!mealType) return res.json({ success: true, skipped: true, reason: 'No meal_type on order' });
+
+    const recipe = await prisma.recipe.findFirst({
+      where: { meal_type: mealType, is_active: true, created_by: user.id },
+    });
+    if (!recipe) return res.json({ success: true, skipped: true, reason: `No active recipe for ${mealType}` });
+
+    const ingredients = (recipe.ingredients as any[]) || [];
+    const servings = recipe.servings || 1;
+    const deductions: any[] = [];
+    let totalCost = 0;
+
+    for (const ing of ingredients) {
+      const current = await prisma.ingredient.findFirst({
+        where: { id: ing.ingredient_id, created_by: user.id },
+      });
+      if (current) {
+        const deductQty = ing.quantity / servings;
+        const newStock = Math.max(0, (current.current_stock || 0) - deductQty);
+        const cost = deductQty * (current.cost_per_unit || 0);
+        totalCost += cost;
+
+        await prisma.ingredient.update({
+          where: { id: current.id },
+          data: {
+            current_stock: newStock,
+            total_value: newStock * (current.cost_per_unit || 0),
+            is_critical: newStock <= (current.min_stock_threshold || 0),
+          },
+        });
+
+        deductions.push({ ingredient: ing.ingredient_name, deducted: deductQty, unit: ing.unit, remaining: newStock });
+      }
+    }
+
+    await prisma.consumptionLog.create({
+      data: {
+        date: new Date().toISOString().split('T')[0],
+        recipe_id: recipe.id,
+        recipe_name: recipe.name,
+        meal_type: recipe.meal_type,
+        quantity_prepared: 1,
+        ingredients_used: recipe.ingredients || undefined,
+        total_cost: totalCost,
+        cost_per_meal: totalCost,
+      },
+    });
+
+    res.json({ success: true, deductions });
+  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
