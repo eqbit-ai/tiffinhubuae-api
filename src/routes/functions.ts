@@ -1108,28 +1108,37 @@ router.post('/create-stripe-connect-account', async (req: AuthRequest, res) => {
     const user = req.user!;
     const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
 
-    const account = await stripe.accounts.create({
-      type: 'express',
-      country: 'AE',
-      email: user.email,
-      capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-      business_type: 'company',
-    });
+    let accountId = user.stripe_connect_account_id;
 
+    // If user already has a Connect account, reuse it
+    if (!accountId) {
+      console.log('[StripeConnect] Creating new account for', user.email);
+      const account = await stripe.accounts.create({
+        type: 'express',
+        country: 'AE',
+        email: user.email,
+        capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+        business_type: 'company',
+      });
+      accountId = account.id;
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { stripe_connect_account_id: accountId },
+      });
+    }
+
+    console.log('[StripeConnect] Creating account link for', accountId);
     const accountLink = await stripe.accountLinks.create({
-      account: account.id,
+      account: accountId,
       refresh_url: `${origin}/PaymentSetup?refresh=true`,
       return_url: `${origin}/PaymentSetup?success=true`,
       type: 'account_onboarding',
     });
 
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { stripe_connect_account_id: account.id },
-    });
-
-    res.json({ success: true, url: accountLink.url, accountId: account.id });
+    res.json({ success: true, url: accountLink.url, accountId });
   } catch (error: any) {
+    console.error('[StripeConnect] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1142,8 +1151,10 @@ router.post('/get-stripe-account-status', async (req: AuthRequest, res) => {
       return res.json({ connected: false });
     }
 
+    console.log('[StripeStatus] Checking account:', user.stripe_connect_account_id);
     const account = await stripe.accounts.retrieve(user.stripe_connect_account_id);
     const isVerified = account.charges_enabled && account.payouts_enabled;
+    console.log('[StripeStatus] charges_enabled:', account.charges_enabled, 'payouts_enabled:', account.payouts_enabled);
 
     await prisma.user.update({
       where: { id: user.id },
