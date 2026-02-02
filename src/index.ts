@@ -23,8 +23,12 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Static file serving for uploads
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Static file serving for uploads (with cross-origin headers for frontend)
+app.use('/uploads', (_req, res, next) => {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  next();
+}, express.static(path.join(__dirname, '../uploads')));
 
 // Health check (before auth-gated routes)
 app.get('/api/health', (_req, res) => {
