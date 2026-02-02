@@ -1113,7 +1113,7 @@ router.post('/create-stripe-connect-account', async (req: AuthRequest, res) => {
       country: 'AE',
       email: user.email,
       capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-      business_type: 'individual',
+      business_type: 'company',
     });
 
     const accountLink = await stripe.accountLinks.create({
