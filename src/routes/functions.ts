@@ -107,7 +107,18 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
       return res.status(400).json({ error: 'Missing required fields: to (or customerId with phone number)' });
     }
 
+    const whatsappLimit = user.whatsapp_limit || 400;
+    const whatsappSent = user.whatsapp_sent_count || 0;
+    if (whatsappSent >= whatsappLimit) {
+      return res.status(403).json({ error: `WhatsApp message limit reached (${whatsappLimit}). Please reset your cycle or upgrade.` });
+    }
+
     const result = await sendWhatsAppMessage({ to, message });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { whatsapp_sent_count: whatsappSent + 1 },
+    });
 
     await prisma.activityLog.create({
       data: {
@@ -122,7 +133,7 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
       },
     });
 
-    res.json({ ...result, to });
+    res.json({ ...result, to, whatsapp_sent_count: whatsappSent + 1, whatsapp_limit: whatsappLimit });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
