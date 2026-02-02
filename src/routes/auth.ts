@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { generateToken, authMiddleware, superAdminOnly, AuthRequest } from '../middleware/auth';
+import { sendEmail } from '../services/email';
 
 const router = Router();
 
@@ -187,6 +189,82 @@ router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) =
     });
 
     res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/auth/forgot-password
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (user && user.subscription_status !== 'deleted') {
+      const token = crypto.randomBytes(32).toString('hex');
+      const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { reset_token: token, reset_token_expires: expires },
+      });
+
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const resetLink = `${frontendUrl}/reset-password?token=${token}`;
+
+      await sendEmail({
+        to: email,
+        subject: 'Reset your TiffinHub password',
+        body: `
+          <h2>Password Reset</h2>
+          <p>You requested a password reset. Click the link below to set a new password:</p>
+          <p><a href="${resetLink}">${resetLink}</a></p>
+          <p>This link expires in 1 hour.</p>
+          <p>If you didn't request this, you can safely ignore this email.</p>
+        `,
+      });
+    }
+
+    // Always return success to avoid revealing whether the email exists
+    res.json({ message: 'If an account with that email exists, a reset link has been sent.' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/auth/reset-password
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        reset_token: token,
+        reset_token_expires: { gt: new Date() },
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const password_hash = await bcrypt.hash(password, 12);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password_hash,
+        reset_token: null,
+        reset_token_expires: null,
+      },
+    });
+
+    res.json({ message: 'Password has been reset successfully' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

@@ -49,6 +49,8 @@ model User {
   ramadan_dinner_time       String?
   ramadan_suhoor_time       String?
   ramadan_iftar_time        String?
+  reset_token               String?
+  reset_token_expires       DateTime?
   is_super_admin            Boolean   @default(false)
   special_access_type       String?
   created_at                DateTime  @default(now())
