@@ -22,6 +22,35 @@ const booleanFields = new Set([
   'is_active', 'deposit_paid', 'discount_applied',
 ]);
 
+// Fields that are Float/Int in Prisma — empty strings must become null or 0
+const numericFields = new Set([
+  'payment_amount', 'last_payment_amount', 'paid_days', 'delivered_days', 'days_remaining',
+  'meals_delivered', 'tiffin_balance', 'roti_quantity', 'total_pause_days',
+  'price', 'current_stock', 'min_stock_threshold', 'cost_per_unit', 'total_value',
+  'total_cost', 'cost_per_serving', 'quantity', 'cost_value',
+  'amount', 'tax_amount', 'total_amount', 'platform_fee_amount', 'net_amount',
+  'discount_amount', 'billing_amount', 'capacity', 'given_count', 'returned_count',
+  'outstanding', 'deposit_amount', 'count', 'quantity_prepared', 'cost_per_meal',
+  'rating', 'total_orders', 'delivered_count', 'fee_percentage',
+]);
+
+// Sanitize empty strings: convert to null for non-string fields
+function sanitizeEmptyStrings(data: any) {
+  for (const key of Object.keys(data)) {
+    if (data[key] === '') {
+      if (numericFields.has(key) || dateFields.has(key) || booleanFields.has(key)) {
+        data[key] = null;
+      }
+    }
+    // Convert string numbers to actual numbers for numeric fields
+    if (numericFields.has(key) && typeof data[key] === 'string' && data[key] !== '') {
+      const parsed = Number(data[key]);
+      data[key] = isNaN(parsed) ? null : parsed;
+    }
+  }
+  return data;
+}
+
 function coerceBooleans(data: any) {
   for (const key of Object.keys(data)) {
     if (booleanFields.has(key) && typeof data[key] === 'string') {
@@ -34,7 +63,11 @@ function coerceBooleans(data: any) {
 // Convert date-like strings to proper ISO DateTime
 function coerceDates(data: any) {
   for (const key of Object.keys(data)) {
-    if (dateFields.has(key) && typeof data[key] === 'string' && data[key]) {
+    if (dateFields.has(key) && typeof data[key] === 'string') {
+      if (!data[key]) {
+        data[key] = null;
+        continue;
+      }
       // If it's just a date like "2026-01-01", make it a full ISO datetime
       if (/^\d{4}-\d{2}-\d{2}$/.test(data[key])) {
         data[key] = new Date(data[key] + 'T00:00:00.000Z');
@@ -108,8 +141,19 @@ function buildWhere(config: typeof entityConfig[string], user: AuthRequest['user
   delete where.created_by;
   delete where.user_email;
 
-  // Remove Base44-specific filter operators that Prisma doesn't understand
-  // e.g. { id: someValue } is fine, but we need to keep it compatible
+  // Convert MongoDB-style operators to Prisma equivalents
+  for (const key of Object.keys(where)) {
+    if (where[key] && typeof where[key] === 'object' && !Array.isArray(where[key])) {
+      const val = where[key];
+      if ('$ne' in val) { where[key] = { not: val.$ne }; }
+      else if ('$gt' in val) { where[key] = { gt: val.$gt }; }
+      else if ('$gte' in val) { where[key] = { gte: val.$gte }; }
+      else if ('$lt' in val) { where[key] = { lt: val.$lt }; }
+      else if ('$lte' in val) { where[key] = { lte: val.$lte }; }
+      else if ('$in' in val) { where[key] = { in: val.$in }; }
+    }
+  }
+
   if (config.ownerField) {
     where[config.ownerField] = config.ownerValue === 'email' ? user!.email : user!.id;
   }
@@ -276,6 +320,7 @@ router.post('/:entity', authMiddleware, async (req: AuthRequest, res) => {
     delete data.created_date;
     delete data.updated_date;
 
+    sanitizeEmptyStrings(data);
     coerceBooleans(data);
     coerceDates(data);
 
@@ -330,6 +375,7 @@ router.put('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
       'ingredient', 'wastages', 'user_email', 'skipRecords', 'delivered_time',
     ];
     for (const f of stripFields) delete updateData[f];
+    sanitizeEmptyStrings(updateData);
     coerceBooleans(updateData);
     coerceDates(updateData);
 
