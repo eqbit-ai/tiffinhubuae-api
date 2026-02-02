@@ -107,7 +107,7 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
       return res.status(400).json({ error: 'Missing required fields: to (or customerId with phone number)' });
     }
 
-    const whatsappLimit = user.whatsapp_limit || 400;
+    const whatsappLimit = Math.max(user.whatsapp_limit || 400, 400);
     const whatsappSent = user.whatsapp_sent_count || 0;
     if (whatsappSent >= whatsappLimit) {
       return res.status(403).json({ error: `WhatsApp message limit reached (${whatsappLimit}). Please reset your cycle or upgrade.` });

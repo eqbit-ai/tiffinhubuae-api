@@ -96,6 +96,7 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res) => {
   const { password_hash: _, ...safeUser } = req.user as any;
   if (safeUser.created_at) safeUser.created_date = safeUser.created_at;
   if (safeUser.updated_at) safeUser.updated_date = safeUser.updated_at;
+  safeUser.whatsapp_limit = Math.max(safeUser.whatsapp_limit || 400, 400);
   res.json(safeUser);
 });
 
