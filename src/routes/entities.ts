@@ -324,6 +324,11 @@ router.post('/:entity', authMiddleware, async (req: AuthRequest, res) => {
     coerceBooleans(data);
     coerceDates(data);
 
+    // MenuItem: derive 'name' from 'item_name' if not provided (name is required in schema)
+    if (req.params.entity === 'menu_items' && !data.name && data.item_name) {
+      data.name = data.item_name;
+    }
+
     const record = await config.model().create({ data });
     res.status(201).json(addVirtualFields(record));
   } catch (error: any) {
