@@ -123,10 +123,13 @@ model Customer {
   created_at          DateTime  @default(now())
   updated_at          DateTime  @updatedAt
 
+  last_login_at       DateTime?
+
   creator       User          @relation(fields: [created_by], references: [id])
   orders        Order[]
   tiffinSkips   TiffinSkip[]
   paymentLinks  PaymentLink[]
+  oneTimeOrders OneTimeOrder[]
 
   @@index([created_by])
   @@index([is_deleted])
@@ -656,4 +659,43 @@ model ChatMessage {
 
   @@index([created_by])
   @@index([customer_phone])
+}
+
+model CustomerOTP {
+  id            String   @id @default(cuid())
+  phone_number  String
+  otp_code      String
+  merchant_id   String
+  customer_id   String?
+  attempts      Int      @default(0)
+  verified      Boolean  @default(false)
+  expires_at    DateTime
+  created_at    DateTime @default(now())
+
+  @@index([phone_number, merchant_id])
+}
+
+model OneTimeOrder {
+  id                String   @id @default(cuid())
+  customer_id       String
+  customer_name     String?
+  items             Json     // [{menu_item_id, name, quantity, price}]
+  total_amount      Float
+  currency          String   @default("AED")
+  delivery_date     String?
+  delivery_time     String?
+  special_notes     String?
+  status            String   @default("pending") // pending, paid, preparing, delivered
+  payment_status    String   @default("pending")
+  stripe_session_id String?
+  platform_fee      Float?   @default(0)
+  net_amount        Float?   @default(0)
+  created_by        String
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  customer Customer @relation(fields: [customer_id], references: [id])
+
+  @@index([customer_id])
+  @@index([created_by])
 }
