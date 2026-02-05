@@ -68,7 +68,138 @@ router.post('/stripe', async (req: Request, res: Response) => {
           break;
         }
 
-        // Handle customer tiffin payment
+        // Handle one-time order payment
+        if (session.metadata?.payment_type === 'one_time_order') {
+          const orderId = session.metadata?.order_id;
+          const customerOwnerEmail = session.metadata?.customer_owner_email;
+          if (!orderId || !customerOwnerEmail) break;
+
+          const ownerUser = await prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+          if (!ownerUser) break;
+
+          const order = await prisma.oneTimeOrder.findFirst({
+            where: { id: orderId, created_by: ownerUser.id },
+          });
+
+          if (order) {
+            await prisma.oneTimeOrder.update({
+              where: { id: order.id },
+              data: { status: 'paid', payment_status: 'paid' },
+            });
+
+            const customer = await prisma.customer.findFirst({
+              where: { id: order.customer_id },
+            });
+
+            // Notify merchant
+            await prisma.notification.create({
+              data: {
+                user_email: customerOwnerEmail,
+                title: 'New Order Received',
+                message: `${order.customer_name} placed an order for ${(order.currency || 'AED')} ${order.total_amount}`,
+                type: 'order',
+                notification_type: 'info',
+                customer_id: order.customer_id,
+                customer_name: order.customer_name,
+              },
+            });
+
+            // Send WhatsApp to merchant
+            if (ownerUser.whatsapp_number && ownerUser.whatsapp_notifications_enabled) {
+              try {
+                await sendWhatsAppMessage({
+                  to: ownerUser.whatsapp_number,
+                  message: `🛒 *New Order*\n\nCustomer: ${order.customer_name}\nAmount: ${order.currency} ${order.total_amount}\nDelivery: ${order.delivery_date || 'TBD'}\n\nPlease check your dashboard.`,
+                });
+              } catch { }
+            }
+
+            // Confirm to customer
+            if (customer?.phone_number) {
+              try {
+                await sendWhatsAppMessage({
+                  to: customer.phone_number,
+                  message: `✅ *Order Confirmed*\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n${order.delivery_date ? `Delivery: ${order.delivery_date}` : ''}\n\nThank you!`,
+                });
+              } catch { }
+            }
+          }
+          break;
+        }
+
+        // Handle subscription renewal payment
+        if (session.metadata?.payment_type === 'renewal') {
+          const customerOwnerEmail = session.metadata?.customer_owner_email;
+          if (!customerId || !customerOwnerEmail) break;
+
+          const ownerUser = await prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+          if (!ownerUser) break;
+
+          const customer = await prisma.customer.findFirst({
+            where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
+          });
+
+          if (customer) {
+            const amount = session.amount_total / 100;
+            const currency = (session.currency || 'aed').toUpperCase();
+
+            const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
+            const newEndDate = addMonths(baseDate, 1);
+
+            await prisma.customer.update({
+              where: { id: customer.id },
+              data: {
+                payment_status: 'Paid',
+                last_payment_date: new Date(),
+                last_payment_amount: amount,
+                status: 'active',
+                active: true,
+                is_paused: false,
+                inactive_reason: null,
+                reminder_before_sent: false,
+                reminder_after_sent: false,
+                end_date: newEndDate,
+                due_date: newEndDate,
+                paid_days: (customer.paid_days || 0) + 30,
+                days_remaining: (customer.days_remaining || 0) + 30,
+              },
+            });
+
+            const endFormatted = format(newEndDate, 'dd MMM yyyy');
+
+            if (customer.phone_number) {
+              try {
+                await sendWhatsAppMessage({
+                  to: customer.phone_number,
+                  message: `✅ *Renewal Successful*\n\nHello ${customer.full_name},\n\nYour subscription has been renewed!\n\nAmount: ${currency} ${amount}\nValid until: ${endFormatted}\n\nThank you for continuing with us!`,
+                });
+              } catch { }
+            }
+
+            await sendEmail({
+              to: customerOwnerEmail,
+              subject: `✅ Subscription Renewed - ${customer.full_name}`,
+              body: `<h2>Subscription Renewed</h2>
+<p><strong>${customer.full_name}</strong> has renewed their subscription.</p>
+<p><strong>Amount:</strong> ${currency} ${amount}</p>
+<p><strong>Valid until:</strong> ${endFormatted}</p>`,
+            });
+
+            // Update payment link
+            const paymentLinks = await prisma.paymentLink.findMany({
+              where: { customer_id: customerId, created_by: ownerUser.id, stripe_checkout_session_id: session.id },
+            });
+            if (paymentLinks.length > 0) {
+              await prisma.paymentLink.update({
+                where: { id: paymentLinks[0].id },
+                data: { status: 'paid', paid_at: new Date(), stripe_payment_intent_id: session.payment_intent },
+              });
+            }
+          }
+          break;
+        }
+
+        // Handle customer tiffin payment (legacy flow)
         if (customerId) {
           const customerOwnerEmail = session.metadata?.customer_owner_email;
           if (!customerOwnerEmail) break;
