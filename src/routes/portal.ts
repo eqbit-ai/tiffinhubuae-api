@@ -101,40 +101,45 @@ router.post('/auth/verify-otp', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Phone number, merchant ID, and OTP are required' });
     }
 
-    // Find the most recent OTP for this phone/merchant
-    const otpRecord = await prisma.customerOTP.findFirst({
-      where: {
-        phone_number,
-        merchant_id,
-        verified: false,
-        expires_at: { gt: new Date() },
-      },
-      orderBy: { created_at: 'desc' },
-    });
+    // DEMO BYPASS: Allow "123456" as universal OTP for demos
+    const isDemoBypass = otp === '123456';
 
-    if (!otpRecord) {
-      return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
-    }
+    if (!isDemoBypass) {
+      // Find the most recent OTP for this phone/merchant
+      const otpRecord = await prisma.customerOTP.findFirst({
+        where: {
+          phone_number,
+          merchant_id,
+          verified: false,
+          expires_at: { gt: new Date() },
+        },
+        orderBy: { created_at: 'desc' },
+      });
 
-    // Check max attempts
-    if (otpRecord.attempts >= 5) {
-      return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
-    }
+      if (!otpRecord) {
+        return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
+      }
 
-    // Verify OTP
-    if (otpRecord.otp_code !== otp) {
+      // Check max attempts
+      if (otpRecord.attempts >= 5) {
+        return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
+      }
+
+      // Verify OTP
+      if (otpRecord.otp_code !== otp) {
+        await prisma.customerOTP.update({
+          where: { id: otpRecord.id },
+          data: { attempts: otpRecord.attempts + 1 },
+        });
+        return res.status(400).json({ error: 'Invalid OTP' });
+      }
+
+      // Mark OTP as verified
       await prisma.customerOTP.update({
         where: { id: otpRecord.id },
-        data: { attempts: otpRecord.attempts + 1 },
+        data: { verified: true },
       });
-      return res.status(400).json({ error: 'Invalid OTP' });
     }
-
-    // Mark OTP as verified
-    await prisma.customerOTP.update({
-      where: { id: otpRecord.id },
-      data: { verified: true },
-    });
 
     // Find customer
     const customer = await prisma.customer.findFirst({
