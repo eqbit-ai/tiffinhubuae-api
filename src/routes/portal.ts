@@ -47,18 +47,24 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
     }
 
-    // Rate limiting: Max 5 OTPs per phone per hour
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    const recentOTPs = await prisma.customerOTP.count({
-      where: {
-        phone_number,
-        merchant_id,
-        created_at: { gte: oneHourAgo },
-      },
-    });
+    // DEMO BYPASS: Skip rate limiting for demo numbers
+    const demoNumbers = ['+918284852687', '+918899776655'];
+    const isDemoNumber = demoNumbers.includes(phone_number);
 
-    if (recentOTPs >= 5) {
-      return res.status(429).json({ error: 'Too many OTP requests. Please try again later.' });
+    if (!isDemoNumber) {
+      // Rate limiting: Max 5 OTPs per phone per hour
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const recentOTPs = await prisma.customerOTP.count({
+        where: {
+          phone_number,
+          merchant_id,
+          created_at: { gte: oneHourAgo },
+        },
+      });
+
+      if (recentOTPs >= 5) {
+        return res.status(429).json({ error: 'Too many OTP requests. Please try again later.' });
+      }
     }
 
     // Generate OTP and save
