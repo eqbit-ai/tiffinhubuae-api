@@ -293,6 +293,7 @@ model Supplier {
   contact_number  String?
   email           String?
   address         String?
+  category        String?
   notes           String?
   created_by      String
   created_at      DateTime @default(now())
