@@ -10,13 +10,43 @@ const dateFields = new Set([
     'pause_start', 'pause_end', 'trial_ends_at', 'subscription_ends_at',
     'current_period_end', 'next_billing_date', 'cancelled_at', 'trial_cancelled_at',
     'subscription_start_date', 'payment_date', 'expires_at', 'paid_at',
+    'trial_end_date', 'period_start', 'period_end',
+    'given_date', 'last_reminder', 'delivered_at', 'prepared_at',
 ]);
 // Boolean fields that may arrive as strings from CSV imports
 const booleanFields = new Set([
     'active', 'is_deleted', 'is_paused', 'skip_weekends', 'is_active', 'is_critical',
     'carry_forward_applied', 'read', 'is_read', 'email_sent', 'notification_sent',
-    'reminder_before_sent', 'reminder_after_sent',
+    'reminder_before_sent', 'reminder_after_sent', 'is_trial', 'trial_converted',
+    'is_active', 'deposit_paid', 'discount_applied',
 ]);
+// Fields that are Float/Int in Prisma — empty strings must become null or 0
+const numericFields = new Set([
+    'payment_amount', 'last_payment_amount', 'paid_days', 'delivered_days', 'days_remaining',
+    'meals_delivered', 'tiffin_balance', 'roti_quantity', 'total_pause_days',
+    'price', 'current_stock', 'min_stock_threshold', 'cost_per_unit', 'total_value',
+    'total_cost', 'cost_per_serving', 'quantity', 'cost_value',
+    'amount', 'tax_amount', 'total_amount', 'platform_fee_amount', 'net_amount',
+    'discount_amount', 'billing_amount', 'capacity', 'given_count', 'returned_count',
+    'outstanding', 'deposit_amount', 'count', 'quantity_prepared', 'cost_per_meal',
+    'rating', 'total_orders', 'delivered_count', 'fee_percentage',
+]);
+// Sanitize empty strings: convert to null for non-string fields
+function sanitizeEmptyStrings(data) {
+    for (const key of Object.keys(data)) {
+        if (data[key] === '') {
+            if (numericFields.has(key) || dateFields.has(key) || booleanFields.has(key)) {
+                data[key] = null;
+            }
+        }
+        // Convert string numbers to actual numbers for numeric fields
+        if (numericFields.has(key) && typeof data[key] === 'string' && data[key] !== '') {
+            const parsed = Number(data[key]);
+            data[key] = isNaN(parsed) ? null : parsed;
+        }
+    }
+    return data;
+}
 function coerceBooleans(data) {
     for (const key of Object.keys(data)) {
         if (booleanFields.has(key) && typeof data[key] === 'string') {
@@ -28,7 +58,11 @@ function coerceBooleans(data) {
 // Convert date-like strings to proper ISO DateTime
 function coerceDates(data) {
     for (const key of Object.keys(data)) {
-        if (dateFields.has(key) && typeof data[key] === 'string' && data[key]) {
+        if (dateFields.has(key) && typeof data[key] === 'string') {
+            if (!data[key]) {
+                data[key] = null;
+                continue;
+            }
             // If it's just a date like "2026-01-01", make it a full ISO datetime
             if (/^\d{4}-\d{2}-\d{2}$/.test(data[key])) {
                 data[key] = new Date(data[key] + 'T00:00:00.000Z');
@@ -63,7 +97,7 @@ const entityConfig = {
     orders: { model: () => prisma_1.prisma.order, ownerField: 'created_by', ownerValue: 'id' },
     menu_items: { model: () => prisma_1.prisma.menuItem, ownerField: 'created_by', ownerValue: 'id' },
     tiffin_skips: { model: () => prisma_1.prisma.tiffinSkip, ownerField: 'created_by', ownerValue: 'id' },
-    notifications: { model: () => prisma_1.prisma.notification, ownerField: 'user_email', ownerValue: 'email', listAll: true },
+    notifications: { model: () => prisma_1.prisma.notification, ownerField: 'user_email', ownerValue: 'email' },
     activity_logs: { model: () => prisma_1.prisma.activityLog, ownerField: 'created_by', ownerValue: 'id' },
     ingredients: { model: () => prisma_1.prisma.ingredient, ownerField: 'created_by', ownerValue: 'id' },
     recipes: { model: () => prisma_1.prisma.recipe, ownerField: 'created_by', ownerValue: 'id' },
@@ -74,7 +108,19 @@ const entityConfig = {
     subscriptions: { model: () => prisma_1.prisma.subscription, ownerField: 'user_email', ownerValue: 'email' },
     payment_history: { model: () => prisma_1.prisma.paymentHistory, ownerField: 'user_email', ownerValue: 'email' },
     payment_links: { model: () => prisma_1.prisma.paymentLink, ownerField: 'created_by', ownerValue: 'id' },
-    consumption_logs: { model: () => prisma_1.prisma.consumptionLog, ownerField: '', ownerValue: 'id' },
+    consumption_logs: { model: () => prisma_1.prisma.consumptionLog, ownerField: 'created_by', ownerValue: 'id' },
+    meal_ratings: { model: () => prisma_1.prisma.mealRating, ownerField: 'created_by', ownerValue: 'id' },
+    invoices: { model: () => prisma_1.prisma.invoice, ownerField: 'created_by', ownerValue: 'id' },
+    referrals: { model: () => prisma_1.prisma.referral, ownerField: 'created_by', ownerValue: 'id' },
+    family_groups: { model: () => prisma_1.prisma.familyGroup, ownerField: 'created_by', ownerValue: 'id' },
+    drivers: { model: () => prisma_1.prisma.driver, ownerField: 'created_by', ownerValue: 'id' },
+    delivery_batches: { model: () => prisma_1.prisma.deliveryBatch, ownerField: 'created_by', ownerValue: 'id' },
+    delivery_items: { model: () => prisma_1.prisma.deliveryItem, ownerField: 'created_by', ownerValue: 'id' },
+    containers: { model: () => prisma_1.prisma.container, ownerField: 'created_by', ownerValue: 'id' },
+    container_logs: { model: () => prisma_1.prisma.containerLog, ownerField: 'created_by', ownerValue: 'id' },
+    kitchens: { model: () => prisma_1.prisma.kitchen, ownerField: 'created_by', ownerValue: 'id' },
+    prep_items: { model: () => prisma_1.prisma.prepItem, ownerField: 'created_by', ownerValue: 'id' },
+    chat_messages: { model: () => prisma_1.prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
 };
 // Helper to build where clause with tenant isolation
 function buildWhere(config, user, filters = {}) {
@@ -82,8 +128,30 @@ function buildWhere(config, user, filters = {}) {
     // Remove frontend-supplied created_by / user_email — backend enforces tenant isolation
     delete where.created_by;
     delete where.user_email;
-    // Remove Base44-specific filter operators that Prisma doesn't understand
-    // e.g. { id: someValue } is fine, but we need to keep it compatible
+    // Convert MongoDB-style operators to Prisma equivalents
+    for (const key of Object.keys(where)) {
+        if (where[key] && typeof where[key] === 'object' && !Array.isArray(where[key])) {
+            const val = where[key];
+            if ('$ne' in val) {
+                where[key] = { not: val.$ne };
+            }
+            else if ('$gt' in val) {
+                where[key] = { gt: val.$gt };
+            }
+            else if ('$gte' in val) {
+                where[key] = { gte: val.$gte };
+            }
+            else if ('$lt' in val) {
+                where[key] = { lt: val.$lt };
+            }
+            else if ('$lte' in val) {
+                where[key] = { lte: val.$lte };
+            }
+            else if ('$in' in val) {
+                where[key] = { in: val.$in };
+            }
+        }
+    }
     if (config.ownerField) {
         where[config.ownerField] = config.ownerValue === 'email' ? user.email : user.id;
     }
@@ -245,8 +313,13 @@ router.post('/:entity', auth_1.authMiddleware, async (req, res) => {
         // Remove fields that look like they came from Base44 but aren't in Prisma
         delete data.created_date;
         delete data.updated_date;
+        sanitizeEmptyStrings(data);
         coerceBooleans(data);
         coerceDates(data);
+        // MenuItem: derive 'name' from 'item_name' if not provided (name is required in schema)
+        if (req.params.entity === 'menu_items' && !data.name && data.item_name) {
+            data.name = data.item_name;
+        }
         const record = await config.model().create({ data });
         res.status(201).json(addVirtualFields(record));
     }
@@ -295,10 +368,11 @@ router.put('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
         const stripFields = [
             'id', 'created_date', 'updated_date', 'created_by', 'created_at', 'updated_at',
             'creator', 'customer', 'customerRef', 'orders', 'tiffinSkips', 'paymentLinks',
-            'ingredient', 'wastages', 'user_email', 'skipRecords',
+            'ingredient', 'wastages', 'user_email', 'skipRecords', 'delivered_time',
         ];
         for (const f of stripFields)
             delete updateData[f];
+        sanitizeEmptyStrings(updateData);
         coerceBooleans(updateData);
         coerceDates(updateData);
         console.log('[PUT] entity:', req.params.entity, 'id:', req.params.id);
@@ -311,8 +385,8 @@ router.put('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
         catch (innerErr) {
             console.log('[PUT] innerErr:', innerErr.message?.slice(0, 300));
             // If Prisma rejects unknown fields, strip them and retry
-            if (innerErr.message?.includes('Unknown arg') || innerErr.message?.includes('Unknown field')) {
-                const matches = innerErr.message.match(/Unknown arg `(\w+)`/g) || [];
+            if (innerErr.message?.includes('Unknown arg') || innerErr.message?.includes('Unknown field') || innerErr.message?.includes('Unknown argument')) {
+                const matches = innerErr.message.match(/Unknown (?:arg|argument|field) `(\w+)`/g) || [];
                 for (const m of matches) {
                     const field = m.match(/`(\w+)`/)?.[1];
                     if (field)

@@ -1,5 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.runAutoPaymentReminders = runAutoPaymentReminders;
+exports.runTrialExpiryCheck = runTrialExpiryCheck;
+exports.runMealRatingRequests = runMealRatingRequests;
 const express_1 = require("express");
 const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
@@ -31,7 +34,7 @@ router.post('/record-delivery', async (req, res) => {
             return res.status(400).json({ error: 'Cannot deliver on skipped date', skipped: true });
         }
         const newDeliveredDays = (customer.delivered_days || 0) + 1;
-        const paidDays = customer.paid_days || 30;
+        const paidDays = customer.paid_days || (customer.is_trial ? 3 : 30);
         const daysRemaining = paidDays - newDeliveredDays;
         await prisma_1.prisma.customer.update({
             where: { id: customerId },
@@ -51,6 +54,8 @@ router.post('/record-delivery', async (req, res) => {
                     await (0, whatsapp_1.sendWhatsAppMessage)({
                         to: customer.phone_number,
                         message: `Your ${paidDays}-day tiffin service is complete. Please renew your subscription to continue service.`,
+                        templateName: 'SERVICE_ENDED',
+                        contentVariables: { '1': customer.full_name, '2': 'tiffin service', '3': user.currency || 'AED', '4': String(customer.payment_amount || 0) },
                     });
                 }
                 catch (e) { /* WhatsApp optional */ }
@@ -75,9 +80,10 @@ router.post('/record-delivery', async (req, res) => {
 router.post('/send-whatsapp-message', auth_1.checkPremiumAccess, async (req, res) => {
     try {
         const user = req.user;
-        const { to, message, customerId } = req.body;
-        if (!to || !message) {
-            return res.status(400).json({ error: 'Missing required fields: to, message' });
+        const { message, customerId } = req.body;
+        let { to } = req.body;
+        if (!message) {
+            return res.status(400).json({ error: 'Missing required fields: message' });
         }
         if (customerId) {
             const customer = await prisma_1.prisma.customer.findFirst({
@@ -85,11 +91,26 @@ router.post('/send-whatsapp-message', auth_1.checkPremiumAccess, async (req, res
             });
             if (!customer)
                 return res.status(403).json({ error: 'Customer not found or access denied' });
-            if (customer.phone_number !== to) {
+            if (!to) {
+                to = customer.phone_number;
+            }
+            else if (customer.phone_number !== to) {
                 return res.status(403).json({ error: 'Phone number does not match customer record' });
             }
         }
+        if (!to) {
+            return res.status(400).json({ error: 'Missing required fields: to (or customerId with phone number)' });
+        }
+        const whatsappLimit = Math.max(user.whatsapp_limit || 400, 400);
+        const whatsappSent = user.whatsapp_sent_count || 0;
+        if (whatsappSent >= whatsappLimit) {
+            return res.status(403).json({ error: `WhatsApp message limit reached (${whatsappLimit}). Please reset your cycle or upgrade.` });
+        }
         const result = await (0, whatsapp_1.sendWhatsAppMessage)({ to, message });
+        await prisma_1.prisma.user.update({
+            where: { id: user.id },
+            data: { whatsapp_sent_count: whatsappSent + 1 },
+        });
         await prisma_1.prisma.activityLog.create({
             data: {
                 user_email: user.email,
@@ -102,7 +123,7 @@ router.post('/send-whatsapp-message', auth_1.checkPremiumAccess, async (req, res
                 created_by: user.id,
             },
         });
-        res.json({ ...result, to });
+        res.json({ ...result, to, whatsapp_sent_count: whatsappSent + 1, whatsapp_limit: whatsappLimit });
     }
     catch (error) {
         res.status(500).json({ error: error.message });
@@ -122,8 +143,14 @@ router.post('/send-payment-reminder', auth_1.checkPremiumAccess, async (req, res
             return res.status(404).json({ error: 'Customer not found or deleted' });
         if (!customer.phone_number)
             return res.status(400).json({ error: 'Customer has no phone number' });
-        const message = `🔔 *Payment Reminder - TiffinHub*\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\n*Amount Due:* AED ${customer.payment_amount}\n${customer.due_date ? `*Due Date:* ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
-        await (0, whatsapp_1.sendWhatsAppMessage)({ to: customer.phone_number, message });
+        const currency = user.currency || 'AED';
+        const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\nAmount Due: ${currency} ${customer.payment_amount}\n${customer.due_date ? `Due Date: ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
+        await (0, whatsapp_1.sendWhatsAppMessage)({
+            to: customer.phone_number,
+            message,
+            templateName: 'PAYMENT_REMINDER',
+            contentVariables: { '1': customer.full_name, '2': currency, '3': String(customer.payment_amount || 0) },
+        });
         await (0, email_1.sendEmail)({
             to: user.email,
             subject: `Payment Reminder Sent - ${customer.full_name}`,
@@ -155,8 +182,14 @@ router.post('/send-bulk-payment-reminders', auth_1.checkPremiumAccess, async (re
                 continue;
             }
             try {
-                const message = `🔔 *Payment Reminder*\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in *${customer.days_remaining} days*.\n\n*Amount Due:* AED ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you! 🙏`;
-                await (0, whatsapp_1.sendWhatsAppMessage)({ to: customer.phone_number, message });
+                const bulkCurrency = user.currency || 'AED';
+                const message = `Payment Reminder\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in ${customer.days_remaining} days.\n\nAmount Due: ${bulkCurrency} ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you!`;
+                await (0, whatsapp_1.sendWhatsAppMessage)({
+                    to: customer.phone_number,
+                    message,
+                    templateName: 'PAYMENT_REMINDER',
+                    contentVariables: { '1': customer.full_name, '2': bulkCurrency, '3': String(customer.payment_amount || 0) },
+                });
                 sentCount++;
             }
             catch (error) {
@@ -251,7 +284,9 @@ router.post('/check-low-stock', auth_1.checkPremiumAccess, async (req, res) => {
                 body: `<h2>Low Stock Alert</h2><ul>${criticalStock.map(i => `<li><strong>${i.name}</strong>: ${i.current_stock} ${i.unit} (Min: ${i.min_stock_threshold})</li>`).join('')}</ul>`,
             });
         }
-        catch { }
+        catch (e) {
+            console.error('[Functions] Send failed:', e.message);
+        }
         res.json({ success: true, critical_count: criticalStock.length, critical_items: criticalStock });
     }
     catch (error) {
@@ -778,8 +813,14 @@ router.post('/send-customer-payment-reminder', auth_1.checkPremiumAccess, async 
             return res.status(404).json({ error: 'Customer not found' });
         if (!customer.phone_number)
             return res.status(400).json({ error: 'No phone number' });
-        const message = `🔔 *Payment Reminder*\n\nHello ${customer.full_name},\n\nYour payment of AED ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
-        await (0, whatsapp_1.sendWhatsAppMessage)({ to: customer.phone_number, message });
+        const cCurrency = user.currency || 'AED';
+        const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment of ${cCurrency} ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
+        await (0, whatsapp_1.sendWhatsAppMessage)({
+            to: customer.phone_number,
+            message,
+            templateName: 'PAYMENT_REMINDER',
+            contentVariables: { '1': customer.full_name, '2': cCurrency, '3': String(customer.payment_amount || 0) },
+        });
         res.json({ success: true, message: 'Reminder sent' });
     }
     catch (error) {
@@ -993,26 +1034,34 @@ router.post('/create-stripe-connect-account', async (req, res) => {
     try {
         const user = req.user;
         const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
-        const account = await stripe_1.stripe.accounts.create({
-            type: 'express',
-            country: 'AE',
-            email: user.email,
-            capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-            business_type: 'individual',
-        });
+        let accountId = user.stripe_connect_account_id;
+        // If user already has a Connect account, reuse it
+        if (!accountId) {
+            console.log('[StripeConnect] Creating new account for', user.email);
+            const account = await stripe_1.stripe.accounts.create({
+                type: 'express',
+                country: 'AE',
+                email: user.email,
+                capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+                business_type: 'company',
+            });
+            accountId = account.id;
+            await prisma_1.prisma.user.update({
+                where: { id: user.id },
+                data: { stripe_connect_account_id: accountId },
+            });
+        }
+        console.log('[StripeConnect] Creating account link for', accountId);
         const accountLink = await stripe_1.stripe.accountLinks.create({
-            account: account.id,
+            account: accountId,
             refresh_url: `${origin}/PaymentSetup?refresh=true`,
             return_url: `${origin}/PaymentSetup?success=true`,
             type: 'account_onboarding',
         });
-        await prisma_1.prisma.user.update({
-            where: { id: user.id },
-            data: { stripe_connect_account_id: account.id },
-        });
-        res.json({ success: true, url: accountLink.url, accountId: account.id });
+        res.json({ success: true, url: accountLink.url, accountId });
     }
     catch (error) {
+        console.error('[StripeConnect] Error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1023,8 +1072,10 @@ router.post('/get-stripe-account-status', async (req, res) => {
         if (!user.stripe_connect_account_id) {
             return res.json({ connected: false });
         }
+        console.log('[StripeStatus] Checking account:', user.stripe_connect_account_id);
         const account = await stripe_1.stripe.accounts.retrieve(user.stripe_connect_account_id);
         const isVerified = account.charges_enabled && account.payouts_enabled;
+        console.log('[StripeStatus] charges_enabled:', account.charges_enabled, 'payouts_enabled:', account.payouts_enabled);
         await prisma_1.prisma.user.update({
             where: { id: user.id },
             data: {
@@ -1089,48 +1140,179 @@ router.post('/subscription-reminders', async (req, res) => {
     }
 });
 // ─── Automatic Payment Reminders (scheduled) ─────────────────
-router.post('/automatic-payment-reminders', async (req, res) => {
-    try {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const customers = await prisma_1.prisma.customer.findMany({
-            where: { is_deleted: false, active: true, payment_status: 'Pending', due_date: { not: null } },
+async function runAutoPaymentReminders() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const threeDaysFromNow = new Date(today);
+    threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+    const threeDaysAgo = new Date(today);
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    const startOfTargetDay = new Date(threeDaysFromNow);
+    startOfTargetDay.setHours(0, 0, 0, 0);
+    const endOfTargetDay = new Date(threeDaysFromNow);
+    endOfTargetDay.setHours(23, 59, 59, 999);
+    const startOfOverdueDay = new Date(threeDaysAgo);
+    startOfOverdueDay.setHours(0, 0, 0, 0);
+    const endOfOverdueDay = new Date(threeDaysAgo);
+    endOfOverdueDay.setHours(23, 59, 59, 999);
+    let beforeCount = 0;
+    let afterCount = 0;
+    // Find all users with active Stripe Connect
+    const users = await prisma_1.prisma.user.findMany({
+        where: {
+            stripe_connect_account_id: { not: null },
+            payment_account_connected: true,
+            payment_verification_status: 'verified',
+        },
+    });
+    const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    for (const user of users) {
+        // --- Upcoming reminders (end_date in 3 days) ---
+        const upcomingCustomers = await prisma_1.prisma.customer.findMany({
+            where: {
+                created_by: user.id,
+                is_deleted: false,
+                active: true,
+                end_date: { gte: startOfTargetDay, lte: endOfTargetDay },
+                reminder_before_sent: { not: true },
+                phone_number: { not: null },
+            },
         });
-        let beforeCount = 0;
-        let afterCount = 0;
-        for (const customer of customers) {
-            if (!customer.due_date || !customer.phone_number)
+        for (const customer of upcomingCustomers) {
+            if (!customer.phone_number || !customer.payment_amount)
                 continue;
-            const dueDate = new Date(customer.due_date);
-            dueDate.setHours(0, 0, 0, 0);
-            const diffDays = Math.floor((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-            if (diffDays === 3 && !customer.reminder_before_sent) {
-                try {
-                    await (0, whatsapp_1.sendWhatsAppMessage)({
-                        to: customer.phone_number,
-                        message: `🔔 *Payment Reminder*\n\nHello ${customer.full_name},\n\nYour payment is due in 3 days.\n*Amount Due:* AED ${customer.payment_amount}\n\nThank you!`,
-                    });
-                    await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
-                    beforeCount++;
-                }
-                catch { }
+            try {
+                const amount = customer.payment_amount;
+                const currency = user.currency || 'aed';
+                const feePercentage = user.fee_percentage || 3.5;
+                const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                const session = await stripe_1.stripe.checkout.sessions.create({
+                    mode: 'payment',
+                    payment_method_types: ['card'],
+                    line_items: [{
+                            price_data: {
+                                currency,
+                                product_data: { name: 'Tiffin Subscription Renewal' },
+                                unit_amount: Math.round(amount * 100),
+                            },
+                            quantity: 1,
+                        }],
+                    payment_intent_data: {
+                        application_fee_amount: Math.round(platformFeeAmount * 100),
+                        metadata: { customer_id: customer.id, merchant_email: user.email },
+                    },
+                    metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
+                    success_url: `${appUrl}/PaymentSuccess?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${appUrl}/PaymentCancelled?session_id={CHECKOUT_SESSION_ID}`,
+                }, { stripeAccount: user.stripe_connect_account_id });
+                await prisma_1.prisma.paymentLink.create({
+                    data: {
+                        customer_id: customer.id,
+                        customer_name: customer.full_name,
+                        amount,
+                        currency: currency.toUpperCase(),
+                        description: 'Tiffin Subscription Renewal',
+                        status: 'pending',
+                        stripe_checkout_session_id: session.id,
+                        checkout_url: session.url,
+                        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                        platform_fee_amount: platformFeeAmount,
+                        net_amount: amount - platformFeeAmount,
+                        created_by: user.id,
+                    },
+                });
+                const endDateFormatted = customer.end_date ? (0, date_fns_1.format)(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
+                await (0, whatsapp_1.sendWhatsAppMessage)({
+                    to: customer.phone_number,
+                    message: `Payment Reminder\n\nHello ${customer.full_name},\n\nYour tiffin subscription ends on ${endDateFormatted}.\n\nAmount: ${currency.toUpperCase()} ${amount}\n\nPay securely here: ${session.url}\n\nThank you!`,
+                    templateName: 'PAYMENT_REMINDER_LINK',
+                    contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url },
+                });
+                await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
+                beforeCount++;
             }
-            if (diffDays === -3 && !customer.reminder_after_sent) {
-                try {
-                    await (0, whatsapp_1.sendWhatsAppMessage)({
-                        to: customer.phone_number,
-                        message: `⚠️ *Payment Overdue*\n\nHello ${customer.full_name},\n\nYour payment is 3 days overdue.\n*Amount Due:* AED ${customer.payment_amount}\n\nPlease pay immediately.`,
-                    });
-                    await prisma_1.prisma.customer.update({
-                        where: { id: customer.id },
-                        data: { status: 'inactive', inactive_reason: 'non_payment', active: false, reminder_after_sent: true, payment_status: 'Overdue' },
-                    });
-                    afterCount++;
-                }
-                catch { }
+            catch (err) {
+                console.error(`[AutoReminder] Failed for customer ${customer.id}:`, err);
             }
         }
-        res.json({ success: true, beforeReminders: beforeCount, afterReminders: afterCount });
+        // --- Overdue reminders (end_date was 3 days ago) ---
+        const overdueCustomers = await prisma_1.prisma.customer.findMany({
+            where: {
+                created_by: user.id,
+                is_deleted: false,
+                active: true,
+                end_date: { gte: startOfOverdueDay, lte: endOfOverdueDay },
+                reminder_after_sent: { not: true },
+                phone_number: { not: null },
+            },
+        });
+        for (const customer of overdueCustomers) {
+            if (!customer.phone_number || !customer.payment_amount)
+                continue;
+            try {
+                const amount = customer.payment_amount;
+                const currency = user.currency || 'aed';
+                const feePercentage = user.fee_percentage || 3.5;
+                const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                const session = await stripe_1.stripe.checkout.sessions.create({
+                    mode: 'payment',
+                    payment_method_types: ['card'],
+                    line_items: [{
+                            price_data: {
+                                currency,
+                                product_data: { name: 'Tiffin Subscription Renewal - Overdue' },
+                                unit_amount: Math.round(amount * 100),
+                            },
+                            quantity: 1,
+                        }],
+                    payment_intent_data: {
+                        application_fee_amount: Math.round(platformFeeAmount * 100),
+                        metadata: { customer_id: customer.id, merchant_email: user.email },
+                    },
+                    metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
+                    success_url: `${appUrl}/PaymentSuccess?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${appUrl}/PaymentCancelled?session_id={CHECKOUT_SESSION_ID}`,
+                }, { stripeAccount: user.stripe_connect_account_id });
+                await prisma_1.prisma.paymentLink.create({
+                    data: {
+                        customer_id: customer.id,
+                        customer_name: customer.full_name,
+                        amount,
+                        currency: currency.toUpperCase(),
+                        description: 'Tiffin Subscription Renewal - Overdue',
+                        status: 'pending',
+                        stripe_checkout_session_id: session.id,
+                        checkout_url: session.url,
+                        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                        platform_fee_amount: platformFeeAmount,
+                        net_amount: amount - platformFeeAmount,
+                        created_by: user.id,
+                    },
+                });
+                const endDateFormatted = customer.end_date ? (0, date_fns_1.format)(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
+                await (0, whatsapp_1.sendWhatsAppMessage)({
+                    to: customer.phone_number,
+                    message: `Payment Overdue\n\nHello ${customer.full_name},\n\nYour subscription expired on ${endDateFormatted} and payment is overdue.\n\nAmount Due: ${currency.toUpperCase()} ${amount}\n\nPay now to continue: ${session.url}\n\nThank you!`,
+                    templateName: 'PAYMENT_OVERDUE',
+                    contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url },
+                });
+                await prisma_1.prisma.customer.update({
+                    where: { id: customer.id },
+                    data: { status: 'inactive', inactive_reason: 'non_payment', active: false, reminder_after_sent: true, payment_status: 'Overdue' },
+                });
+                afterCount++;
+            }
+            catch (err) {
+                console.error(`[AutoReminder] Overdue failed for customer ${customer.id}:`, err);
+            }
+        }
+    }
+    return { success: true, beforeReminders: beforeCount, afterReminders: afterCount };
+}
+router.post('/automatic-payment-reminders', async (req, res) => {
+    try {
+        const result = await runAutoPaymentReminders();
+        res.json(result);
     }
     catch (error) {
         res.status(500).json({ error: error.message });
@@ -1141,10 +1323,542 @@ router.post('/auto-customer-payment-reminders', async (req, res) => {
     // Same logic as automatic-payment-reminders, kept for backwards compatibility
     return res.json({ success: true, message: 'Use automatic-payment-reminders endpoint' });
 });
+// ─── Trial Expiry Check (cron) ─────────────────────────────────
+async function runTrialExpiryCheck() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    // Find trial customers expiring today or already expired
+    const expiringTrials = await prisma_1.prisma.customer.findMany({
+        where: {
+            is_trial: true,
+            trial_converted: { not: true },
+            active: true,
+            trial_end_date: { lte: new Date() },
+            phone_number: { not: null },
+        },
+    });
+    let sentCount = 0;
+    for (const customer of expiringTrials) {
+        if (!customer.phone_number)
+            continue;
+        try {
+            // Find the user who owns this customer for Stripe checkout
+            const user = await prisma_1.prisma.user.findUnique({ where: { id: customer.created_by } });
+            if (!user)
+                continue;
+            let paymentLink = '';
+            if (user.stripe_connect_account_id && user.payment_account_connected && user.payment_verification_status === 'verified') {
+                const amount = customer.payment_amount || 0;
+                if (amount > 0) {
+                    const feePercentage = user.fee_percentage || 3.5;
+                    const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                    const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+                    const session = await stripe_1.stripe.checkout.sessions.create({
+                        mode: 'payment',
+                        payment_method_types: ['card'],
+                        line_items: [{
+                                price_data: {
+                                    currency: user.currency || 'aed',
+                                    product_data: { name: 'Tiffin Subscription - Convert from Trial' },
+                                    unit_amount: Math.round(amount * 100),
+                                },
+                                quantity: 1,
+                            }],
+                        payment_intent_data: {
+                            application_fee_amount: Math.round(platformFeeAmount * 100),
+                            metadata: { customer_id: customer.id, merchant_email: user.email },
+                        },
+                        metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
+                        success_url: `${appUrl}/PaymentSuccess?session_id={CHECKOUT_SESSION_ID}`,
+                        cancel_url: `${appUrl}/PaymentCancelled?session_id={CHECKOUT_SESSION_ID}`,
+                    }, { stripeAccount: user.stripe_connect_account_id });
+                    paymentLink = `\n\nSubscribe now: ${session.url}`;
+                }
+            }
+            const trialCurrency = (user.currency || 'AED').toUpperCase();
+            await (0, whatsapp_1.sendWhatsAppMessage)({
+                to: customer.phone_number,
+                message: `Hello ${customer.full_name},\n\nYour free trial has ended! We hope you enjoyed our tiffin service.\n\nTo continue without interruption, please subscribe.\n\nAmount: ${trialCurrency} ${customer.payment_amount}/month${paymentLink}\n\nThank you!`,
+                templateName: 'SERVICE_ENDED',
+                contentVariables: { '1': customer.full_name, '2': 'free trial', '3': trialCurrency, '4': String(customer.payment_amount || 0) },
+            });
+            // Deactivate the trial customer
+            await prisma_1.prisma.customer.update({
+                where: { id: customer.id },
+                data: {
+                    active: false,
+                    status: 'inactive',
+                    inactive_reason: 'trial_expired',
+                    payment_status: 'Pending',
+                },
+            });
+            sentCount++;
+        }
+        catch (err) {
+            console.error(`[TrialExpiry] Failed for customer ${customer.id}:`, err);
+        }
+    }
+    return { success: true, trialReminders: sentCount };
+}
+// ─── Auto Meal Rating Request (cron - runs every 15 days) ──────
+async function runMealRatingRequests() {
+    const fifteenDaysAgo = new Date();
+    fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+    // Find all active customers with phone numbers
+    const customers = await prisma_1.prisma.customer.findMany({
+        where: { is_deleted: false, active: true, phone_number: { not: null } },
+    });
+    let sentCount = 0;
+    for (const customer of customers) {
+        if (!customer.phone_number)
+            continue;
+        try {
+            // Skip if we already sent a rating request in the last 15 days
+            const recentRating = await prisma_1.prisma.mealRating.findFirst({
+                where: {
+                    customer_id: customer.id,
+                    created_at: { gte: fifteenDaysAgo },
+                },
+            });
+            if (recentRating)
+                continue;
+            // Create a placeholder rating entry
+            await prisma_1.prisma.mealRating.create({
+                data: {
+                    customer_id: customer.id,
+                    customer_name: customer.full_name,
+                    rating: 0,
+                    meal_type: customer.meal_type,
+                    meal_date: (0, date_fns_1.format)(new Date(), 'yyyy-MM-dd'),
+                    created_by: customer.created_by,
+                },
+            });
+            await (0, whatsapp_1.sendWhatsAppMessage)({
+                to: customer.phone_number,
+                message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
+                templateName: 'FEEDBACK_REQUEST',
+                contentVariables: { '1': customer.full_name },
+            });
+            sentCount++;
+        }
+        catch (err) {
+            console.error(`[MealRating] Failed for customer ${customer.id}:`, err);
+        }
+    }
+    return { success: true, ratingRequests: sentCount };
+}
+// ─── Generate Portal Link ─────────────────────────────────────
+router.post('/generate-portal-link', async (req, res) => {
+    try {
+        const user = req.user;
+        const { customerId } = req.body;
+        const customer = await prisma_1.prisma.customer.findFirst({ where: { id: customerId, created_by: user.id, is_deleted: false } });
+        if (!customer)
+            return res.status(404).json({ error: 'Customer not found' });
+        let token = customer.portal_token;
+        if (!token) {
+            token = require('crypto').randomBytes(24).toString('hex');
+            await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { portal_token: token } });
+        }
+        const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
+        const portalUrl = `${origin}/CustomerPortal?token=${token}`;
+        res.json({ success: true, portalUrl, token });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Generate Referral Code ───────────────────────────────────
+router.post('/generate-referral-code', async (req, res) => {
+    try {
+        const user = req.user;
+        const { customerId } = req.body;
+        const customer = await prisma_1.prisma.customer.findFirst({ where: { id: customerId, created_by: user.id, is_deleted: false } });
+        if (!customer)
+            return res.status(404).json({ error: 'Customer not found' });
+        let code = customer.referral_code;
+        if (!code) {
+            code = customer.full_name.replace(/\s+/g, '').substring(0, 4).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
+            await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { referral_code: code } });
+        }
+        res.json({ success: true, referralCode: code });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Apply Referral Code ──────────────────────────────────────
+router.post('/apply-referral', async (req, res) => {
+    try {
+        const user = req.user;
+        const { customerId, referralCode } = req.body;
+        if (!referralCode)
+            return res.status(400).json({ error: 'Referral code required' });
+        const referrer = await prisma_1.prisma.customer.findFirst({
+            where: { referral_code: referralCode, created_by: user.id, is_deleted: false },
+        });
+        if (!referrer)
+            return res.status(404).json({ error: 'Invalid referral code' });
+        const customer = await prisma_1.prisma.customer.findFirst({ where: { id: customerId, created_by: user.id, is_deleted: false } });
+        if (!customer)
+            return res.status(404).json({ error: 'Customer not found' });
+        if (customer.id === referrer.id)
+            return res.status(400).json({ error: 'Cannot refer yourself' });
+        if (customer.referred_by)
+            return res.status(400).json({ error: 'Customer already has a referral' });
+        await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { referred_by: referrer.id } });
+        await prisma_1.prisma.referral.create({
+            data: {
+                referrer_id: referrer.id,
+                referrer_name: referrer.full_name,
+                referred_id: customer.id,
+                referred_name: customer.full_name,
+                referral_code: referralCode,
+                status: 'completed',
+                created_by: user.id,
+            },
+        });
+        res.json({ success: true, referrer: referrer.full_name });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Approve Customer Registration ─────────────────────────────
+router.post('/approve-customer', async (req, res) => {
+    try {
+        const user = req.user;
+        const { customerId } = req.body;
+        if (!customerId)
+            return res.status(400).json({ error: 'Customer ID required' });
+        const customer = await prisma_1.prisma.customer.findFirst({
+            where: { id: customerId, created_by: user.id, status: 'pending_verification' },
+        });
+        if (!customer)
+            return res.status(404).json({ error: 'Pending customer not found' });
+        const updateData = {
+            active: true,
+            status: 'active',
+        };
+        // If trial, set start/end dates now
+        if (customer.is_trial) {
+            updateData.start_date = new Date();
+            updateData.end_date = (0, date_fns_1.addDays)(new Date(), 3);
+            updateData.trial_end_date = (0, date_fns_1.addDays)(new Date(), 3);
+            updateData.paid_days = 3;
+            updateData.days_remaining = 3;
+            updateData.delivered_days = 0;
+            updateData.meals_delivered = 0;
+        }
+        await prisma_1.prisma.customer.update({ where: { id: customerId }, data: updateData });
+        // Send WhatsApp confirmation
+        if (customer.phone_number) {
+            try {
+                await (0, whatsapp_1.sendWhatsAppMessage)({
+                    to: customer.phone_number,
+                    message: `Hello ${customer.full_name}! Your registration with ${user.business_name || 'our tiffin service'} has been approved. ${customer.is_trial ? 'Your 3-day free trial starts today!' : 'Welcome aboard!'}\n\nThank you!`,
+                    templateName: 'REGISTRATION_STATUS',
+                    contentVariables: { '1': customer.full_name, '2': user.business_name || 'our tiffin service', '3': 'approved', '4': customer.is_trial ? 'Your 3-day free trial starts today!' : 'Welcome aboard!' },
+                });
+            }
+            catch (e) {
+                console.error('[Functions] Send failed:', e.message);
+            }
+        }
+        res.json({ success: true, message: 'Customer approved' });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Reject Customer Registration ──────────────────────────────
+router.post('/reject-customer', async (req, res) => {
+    try {
+        const user = req.user;
+        const { customerId, reason } = req.body;
+        if (!customerId)
+            return res.status(400).json({ error: 'Customer ID required' });
+        const customer = await prisma_1.prisma.customer.findFirst({
+            where: { id: customerId, created_by: user.id, status: 'pending_verification' },
+        });
+        if (!customer)
+            return res.status(404).json({ error: 'Pending customer not found' });
+        await prisma_1.prisma.customer.update({
+            where: { id: customerId },
+            data: { is_deleted: true, deleted_at: new Date(), status: 'rejected' },
+        });
+        if (customer.phone_number) {
+            try {
+                await (0, whatsapp_1.sendWhatsAppMessage)({
+                    to: customer.phone_number,
+                    message: `Hello ${customer.full_name}, unfortunately your registration could not be approved at this time.${reason ? ` Reason: ${reason}` : ''}\n\nPlease contact us for more information.`,
+                    templateName: 'REGISTRATION_STATUS',
+                    contentVariables: { '1': customer.full_name, '2': user.business_name || 'our tiffin service', '3': 'not approved', '4': reason ? `Reason: ${reason}` : 'Please contact us for more information.' },
+                });
+            }
+            catch (e) {
+                console.error('[Functions] Send failed:', e.message);
+            }
+        }
+        res.json({ success: true, message: 'Customer rejected' });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 // ─── WhatsApp Router ─────────────────────────────────────────
 router.post('/whatsapp-router', async (req, res) => {
     // Placeholder for WhatsApp incoming message routing
     res.json({ success: true, message: 'WhatsApp router placeholder' });
+});
+// ─── AI WhatsApp Agent — Inbound Message Handler ─────────────
+router.post('/whatsapp-agent-reply', async (req, res) => {
+    try {
+        const user = req.user;
+        const { from, message } = req.body;
+        if (!from || !message)
+            return res.status(400).json({ error: 'Missing from or message' });
+        const phone = from.replace(/\D/g, '');
+        // Find matching customer by phone
+        const customer = await prisma_1.prisma.customer.findFirst({
+            where: { created_by: user.id, is_deleted: false, phone_number: { contains: phone.slice(-9) } },
+        });
+        // Detect intent from message
+        const lowerMsg = message.toLowerCase();
+        let intent = 'unknown';
+        let reply = '';
+        // Registration intent for unknown numbers
+        if (!customer && /register|subscribe|join|start|sign.?up|new/i.test(lowerMsg)) {
+            intent = 'registration';
+            const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+            reply = `Welcome! Sign up for our tiffin service here:\n\n${appUrl}/join/${user.id}\n\nYou can start with a free 3-day trial or subscribe directly.`;
+            await prisma_1.prisma.chatMessage.create({
+                data: { customer_phone: from, direction: 'inbound', message, intent, auto_replied: true, reply_message: reply, created_by: user.id },
+            });
+            try {
+                await (0, whatsapp_1.sendWhatsAppMessage)({ to: from, message: reply });
+            }
+            catch (e) {
+                console.error('[Functions] Send failed:', e.message);
+            }
+            await prisma_1.prisma.notification.create({
+                data: {
+                    user_email: user.email,
+                    title: 'New Registration Intent',
+                    message: `${from} wants to register — sent join link`,
+                    type: 'whatsapp_agent',
+                    notification_type: 'info',
+                    phone_number: from,
+                },
+            });
+            return res.json({ success: true, intent, reply, customer_found: false });
+        }
+        if (/balance|remaining|days left|kitne din/i.test(lowerMsg)) {
+            intent = 'balance_check';
+            if (customer) {
+                reply = `Hello ${customer.full_name}! You have ${customer.days_remaining || 0} days remaining in your subscription (${customer.delivered_days || 0} delivered out of ${customer.paid_days || 30}).`;
+            }
+            else {
+                reply = 'Sorry, we could not find your account. Please contact support.';
+            }
+        }
+        else if (/skip|chutti|leave|holiday/i.test(lowerMsg)) {
+            intent = 'skip_request';
+            if (customer) {
+                const tomorrow = (0, date_fns_1.format)((0, date_fns_1.addDays)(new Date(), 1), 'yyyy-MM-dd');
+                await prisma_1.prisma.tiffinSkip.create({
+                    data: { customer_id: customer.id, skip_date: tomorrow, reason: 'WhatsApp request', status: 'active', created_by: user.id },
+                });
+                reply = `Done! Your tiffin for tomorrow (${tomorrow}) has been skipped. Enjoy your day off!`;
+            }
+            else {
+                reply = 'Sorry, we could not find your account to process the skip.';
+            }
+        }
+        else if (/menu|aaj ka khana|today.*food|what.*today/i.test(lowerMsg)) {
+            intent = 'menu_inquiry';
+            const dayName = (0, date_fns_1.format)(new Date(), 'EEEE');
+            const menuItems = await prisma_1.prisma.menuItem.findMany({
+                where: { created_by: user.id, is_active: true, day_of_week: dayName },
+            });
+            if (menuItems.length > 0) {
+                reply = `Today's menu (${dayName}):\n${menuItems.map(m => `• ${m.name}${m.description ? ` — ${m.description}` : ''}`).join('\n')}`;
+            }
+            else {
+                const allActive = await prisma_1.prisma.menuItem.findMany({ where: { created_by: user.id, is_active: true }, take: 5 });
+                reply = allActive.length > 0
+                    ? `Today's menu:\n${allActive.map(m => `• ${m.name}`).join('\n')}`
+                    : 'Menu information is not available right now. Please contact us directly.';
+            }
+        }
+        else if (/pay|payment|amount|kitna paisa|raqam/i.test(lowerMsg)) {
+            intent = 'payment_inquiry';
+            if (customer) {
+                reply = `Your subscription amount is ${user.currency || 'AED'} ${customer.payment_amount || 0}. Status: ${customer.payment_status || 'N/A'}. End date: ${customer.end_date ? (0, date_fns_1.format)(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A'}.`;
+            }
+            else {
+                reply = 'Sorry, we could not find your account. Please contact support.';
+            }
+        }
+        else if (/hi|hello|salam|assalam|hey/i.test(lowerMsg)) {
+            intent = 'greeting';
+            reply = `Hello${customer ? ` ${customer.full_name}` : ''}! How can I help you?\n\nYou can ask me:\n• "Balance" — check remaining days\n• "Skip" — skip tomorrow's delivery\n• "Menu" — see today's menu\n• "Payment" — check payment info`;
+        }
+        else {
+            intent = 'unknown';
+            reply = `Thanks for your message! I can help with:\n\n• "Balance" — check remaining days\n• "Skip" — skip tomorrow's delivery\n• "Menu" — see today's menu\n• "Payment" — check payment info\n\nFor anything else, our team will get back to you shortly.`;
+        }
+        // Log the inbound message
+        await prisma_1.prisma.chatMessage.create({
+            data: { customer_phone: from, direction: 'inbound', message, intent, auto_replied: true, reply_message: reply, created_by: user.id },
+        });
+        // Send auto-reply via WhatsApp
+        if (reply) {
+            const customerForPhone = customer || await prisma_1.prisma.customer.findFirst({ where: { created_by: user.id, phone_number: { contains: phone.slice(-9) } } });
+            try {
+                await (0, whatsapp_1.sendWhatsAppMessage)({ to: from, message: reply });
+            }
+            catch (e) {
+                console.error('Failed to send agent reply:', e);
+            }
+        }
+        // Create notification for merchant
+        await prisma_1.prisma.notification.create({
+            data: {
+                user_email: user.email,
+                title: `WhatsApp: ${intent.replace('_', ' ')}`,
+                message: `${from}: ${message.substring(0, 100)}`,
+                type: 'whatsapp_agent',
+                notification_type: 'info',
+                customer_name: customer?.full_name || from,
+                phone_number: from,
+            },
+        });
+        res.json({ success: true, intent, reply, customer_found: !!customer });
+    }
+    catch (error) {
+        console.error('WhatsApp agent error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Reconcile Subscription ───────────────────────────────────
+router.post('/reconcile-subscription', async (req, res) => {
+    try {
+        const user = req.user;
+        const { userEmail } = req.body;
+        const targetEmail = userEmail || user.email;
+        console.log(`[Reconcile] Checking subscription for ${targetEmail}`);
+        const targetUser = await prisma_1.prisma.user.findUnique({ where: { email: targetEmail } });
+        if (!targetUser)
+            return res.status(404).json({ error: 'User not found' });
+        // Skip admin-assigned plans
+        if (targetUser.subscription_source === 'admin') {
+            return res.json({ success: true, message: 'Admin-assigned plan — no reconciliation needed', status: targetUser.subscription_status });
+        }
+        if (!targetUser.stripe_subscription_id) {
+            return res.json({ success: true, message: 'No Stripe subscription on record', status: targetUser.subscription_status });
+        }
+        const stripeSub = await stripe_1.stripe.subscriptions.retrieve(targetUser.stripe_subscription_id);
+        const stripeStatus = stripeSub.status;
+        const dbStatus = targetUser.subscription_status;
+        console.log(`[Reconcile] Stripe says: ${stripeStatus}, DB says: ${dbStatus}`);
+        if (stripeStatus === dbStatus) {
+            return res.json({ success: true, message: 'Already in sync', status: stripeStatus });
+        }
+        // Update DB to match Stripe
+        const isActive = stripeStatus === 'active';
+        await prisma_1.prisma.user.update({
+            where: { id: targetUser.id },
+            data: {
+                subscription_status: stripeStatus,
+                is_paid: isActive,
+                plan_type: isActive ? 'premium' : targetUser.plan_type,
+                current_period_end: new Date(stripeSub.current_period_end * 1000),
+                subscription_ends_at: new Date(stripeSub.current_period_end * 1000),
+                last_payment_status: isActive ? 'succeeded' : stripeStatus,
+            },
+        });
+        // Also update subscription record if it exists
+        const subs = await prisma_1.prisma.subscription.findMany({ where: { user_email: targetEmail } });
+        if (subs.length > 0) {
+            await prisma_1.prisma.subscription.update({
+                where: { id: subs[0].id },
+                data: {
+                    status: stripeStatus,
+                    current_period_end: new Date(stripeSub.current_period_end * 1000),
+                    next_billing_date: new Date(stripeSub.current_period_end * 1000),
+                },
+            });
+        }
+        console.log(`[Reconcile] Updated ${targetEmail}: ${dbStatus} → ${stripeStatus}`);
+        res.json({ success: true, message: `Reconciled: ${dbStatus} → ${stripeStatus}`, previous: dbStatus, current: stripeStatus });
+    }
+    catch (error) {
+        console.error('[Reconcile] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Auto Deduct Inventory on Delivery ────────────────────────
+router.post('/auto-deduct-on-delivery', async (req, res) => {
+    try {
+        const user = req.user;
+        const { orderId } = req.body;
+        if (!orderId)
+            return res.status(400).json({ error: 'orderId required' });
+        const order = await prisma_1.prisma.order.findFirst({
+            where: { id: orderId, created_by: user.id },
+        });
+        if (!order)
+            return res.json({ success: true, skipped: true, reason: 'Order not found' });
+        const mealType = order.meal_type;
+        if (!mealType)
+            return res.json({ success: true, skipped: true, reason: 'No meal_type on order' });
+        const recipe = await prisma_1.prisma.recipe.findFirst({
+            where: { meal_type: mealType, is_active: true, created_by: user.id },
+        });
+        if (!recipe)
+            return res.json({ success: true, skipped: true, reason: `No active recipe for ${mealType}` });
+        const ingredients = recipe.ingredients || [];
+        const servings = recipe.servings || 1;
+        const deductions = [];
+        let totalCost = 0;
+        for (const ing of ingredients) {
+            const current = await prisma_1.prisma.ingredient.findFirst({
+                where: { id: ing.ingredient_id, created_by: user.id },
+            });
+            if (current) {
+                const deductQty = ing.quantity / servings;
+                const newStock = Math.max(0, (current.current_stock || 0) - deductQty);
+                const cost = deductQty * (current.cost_per_unit || 0);
+                totalCost += cost;
+                await prisma_1.prisma.ingredient.update({
+                    where: { id: current.id },
+                    data: {
+                        current_stock: newStock,
+                        total_value: newStock * (current.cost_per_unit || 0),
+                        is_critical: newStock <= (current.min_stock_threshold || 0),
+                    },
+                });
+                deductions.push({ ingredient: ing.ingredient_name, deducted: deductQty, unit: ing.unit, remaining: newStock });
+            }
+        }
+        await prisma_1.prisma.consumptionLog.create({
+            data: {
+                date: new Date().toISOString().split('T')[0],
+                recipe_id: recipe.id,
+                recipe_name: recipe.name,
+                meal_type: recipe.meal_type,
+                quantity_prepared: 1,
+                ingredients_used: recipe.ingredients || undefined,
+                total_cost: totalCost,
+                cost_per_meal: totalCost,
+            },
+        });
+        res.json({ success: true, deductions });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 exports.default = router;
 //# sourceMappingURL=functions.js.map

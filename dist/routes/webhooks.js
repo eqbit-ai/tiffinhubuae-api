@@ -5,6 +5,7 @@ const prisma_1 = require("../lib/prisma");
 const stripe_1 = require("../services/stripe");
 const email_1 = require("../services/email");
 const whatsapp_1 = require("../services/whatsapp");
+const date_fns_1 = require("date-fns");
 const router = (0, express_1.Router)();
 // POST /api/webhooks/stripe
 router.post('/stripe', async (req, res) => {
@@ -20,24 +21,151 @@ router.post('/stripe', async (req, res) => {
         return res.status(400).json({ error: 'Invalid signature' });
     }
     try {
+        console.log(`[Webhook] Received event: ${event.type} (id: ${event.id})`);
         switch (event.type) {
             case 'checkout.session.completed': {
                 const session = event.data.object;
                 const userEmail = session.metadata?.user_email;
                 const customerId = session.metadata?.customer_id;
-                // Handle customer tiffin payment
-                if (customerId) {
+                console.log(`[Webhook] checkout.session.completed — session: ${session.id}, userEmail: ${userEmail}, customerId: ${customerId}, mode: ${session.mode}, payment_type: ${session.metadata?.payment_type}`);
+                // Handle self-registration payment
+                if (customerId && session.metadata?.registration === 'true') {
                     const customerOwnerEmail = session.metadata?.customer_owner_email;
-                    if (!customerOwnerEmail)
+                    console.log(`[Webhook] Registration payment — customerId: ${customerId}, ownerEmail: ${customerOwnerEmail}`);
+                    if (!customerOwnerEmail) {
+                        console.log('[Webhook] No customer_owner_email in metadata, skipping');
                         break;
+                    }
                     const ownerUser = await prisma_1.prisma.user.findUnique({ where: { email: customerOwnerEmail } });
-                    if (!ownerUser)
+                    if (!ownerUser) {
+                        console.log(`[Webhook] Owner user not found: ${customerOwnerEmail}`);
                         break;
+                    }
+                    const customer = await prisma_1.prisma.customer.findFirst({
+                        where: { id: customerId, created_by: ownerUser.id },
+                    });
+                    if (customer) {
+                        const amount = session.amount_total / 100;
+                        console.log(`[Webhook] Updating registration payment for customer ${customer.full_name} — amount: ${amount}`);
+                        await prisma_1.prisma.customer.update({
+                            where: { id: customer.id },
+                            data: {
+                                payment_status: 'Paid',
+                                last_payment_date: new Date(),
+                                last_payment_amount: amount,
+                                payment_amount: amount,
+                                start_date: new Date(),
+                                end_date: (0, date_fns_1.addMonths)(new Date(), 1),
+                                paid_days: 30,
+                                delivered_days: 0,
+                                days_remaining: 30,
+                                // Still pending_verification until merchant approves
+                            },
+                        });
+                        await (0, email_1.sendEmail)({
+                            to: customerOwnerEmail,
+                            subject: `New Paid Registration - ${customer.full_name}`,
+                            body: `<h2>New Paid Customer Registration</h2>
+<p><strong>${customer.full_name}</strong> has registered and paid <strong>${(session.currency || 'aed').toUpperCase()} ${amount}</strong>.</p>
+<p>Please approve their registration in your dashboard.</p>`,
+                        });
+                    }
+                    else {
+                        console.log(`[Webhook] Customer not found for registration — customerId: ${customerId}, ownerId: ${ownerUser.id}`);
+                    }
+                    break;
+                }
+                // Handle one-time order payment
+                if (session.metadata?.payment_type === 'one_time_order') {
+                    const orderId = session.metadata?.order_id;
+                    const customerOwnerEmail = session.metadata?.customer_owner_email;
+                    console.log(`[Webhook] One-time order payment — orderId: ${orderId}, ownerEmail: ${customerOwnerEmail}`);
+                    if (!orderId || !customerOwnerEmail) {
+                        console.log('[Webhook] Missing orderId or customer_owner_email, skipping');
+                        break;
+                    }
+                    const ownerUser = await prisma_1.prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+                    if (!ownerUser) {
+                        console.log(`[Webhook] Owner user not found for order: ${customerOwnerEmail}`);
+                        break;
+                    }
+                    const order = await prisma_1.prisma.oneTimeOrder.findFirst({
+                        where: { id: orderId, created_by: ownerUser.id },
+                    });
+                    if (order) {
+                        console.log(`[Webhook] Updating one-time order ${orderId} to paid`);
+                        await prisma_1.prisma.oneTimeOrder.update({
+                            where: { id: order.id },
+                            data: { status: 'paid', payment_status: 'paid' },
+                        });
+                        const customer = await prisma_1.prisma.customer.findFirst({
+                            where: { id: order.customer_id },
+                        });
+                        // Notify merchant
+                        await prisma_1.prisma.notification.create({
+                            data: {
+                                user_email: customerOwnerEmail,
+                                title: 'New Order Received',
+                                message: `${order.customer_name} placed an order for ${(order.currency || 'AED')} ${order.total_amount}`,
+                                type: 'order',
+                                notification_type: 'info',
+                                customer_id: order.customer_id,
+                                customer_name: order.customer_name,
+                            },
+                        });
+                        // Send WhatsApp to merchant
+                        if (ownerUser.whatsapp_number && ownerUser.whatsapp_notifications_enabled) {
+                            try {
+                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                    to: ownerUser.whatsapp_number,
+                                    message: `New Order\n\nCustomer: ${order.customer_name}\nAmount: ${order.currency} ${order.total_amount}\nDelivery: ${order.delivery_date || 'TBD'}\n\nPlease check your dashboard.`,
+                                    templateName: 'NEW_ORDER_MERCHANT',
+                                    contentVariables: { '1': order.customer_name || 'Customer', '2': order.currency || 'AED', '3': String(order.total_amount), '4': order.delivery_date || 'TBD' },
+                                });
+                            }
+                            catch (e) {
+                                console.error('[Webhook] WhatsApp send failed:', e.message);
+                            }
+                        }
+                        // Confirm to customer
+                        if (customer?.phone_number) {
+                            try {
+                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                    to: customer.phone_number,
+                                    message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n${order.delivery_date ? `Delivery: ${order.delivery_date}` : ''}\n\nThank you!`,
+                                    templateName: 'ORDER_CONFIRMED',
+                                    contentVariables: { '1': customer.full_name, '2': order.currency, '3': String(order.total_amount), '4': order.delivery_date ? `Delivery: ${order.delivery_date}` : '' },
+                                });
+                            }
+                            catch (e) {
+                                console.error('[Webhook] WhatsApp send failed:', e.message);
+                            }
+                        }
+                    }
+                    break;
+                }
+                // Handle subscription renewal payment
+                if (session.metadata?.payment_type === 'renewal') {
+                    const customerOwnerEmail = session.metadata?.customer_owner_email;
+                    console.log(`[Webhook] Renewal payment — customerId: ${customerId}, ownerEmail: ${customerOwnerEmail}`);
+                    if (!customerId || !customerOwnerEmail) {
+                        console.log('[Webhook] Missing customerId or customer_owner_email for renewal, skipping');
+                        break;
+                    }
+                    const ownerUser = await prisma_1.prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+                    if (!ownerUser) {
+                        console.log(`[Webhook] Owner user not found for renewal: ${customerOwnerEmail}`);
+                        break;
+                    }
                     const customer = await prisma_1.prisma.customer.findFirst({
                         where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
                     });
                     if (customer) {
                         const amount = session.amount_total / 100;
+                        const currency = (session.currency || 'aed').toUpperCase();
+                        console.log(`[Webhook] Processing renewal for ${customer.full_name} — ${currency} ${amount}`);
+                        const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
+                        const newEndDate = (0, date_fns_1.addMonths)(baseDate, 1);
                         await prisma_1.prisma.customer.update({
                             where: { id: customer.id },
                             data: {
@@ -46,24 +174,37 @@ router.post('/stripe', async (req, res) => {
                                 last_payment_amount: amount,
                                 status: 'active',
                                 active: true,
+                                is_paused: false,
                                 inactive_reason: null,
                                 reminder_before_sent: false,
                                 reminder_after_sent: false,
+                                end_date: newEndDate,
+                                due_date: newEndDate,
+                                paid_days: (customer.paid_days || 0) + 30,
+                                days_remaining: (customer.days_remaining || 0) + 30,
                             },
                         });
+                        const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
                         if (customer.phone_number) {
                             try {
                                 await (0, whatsapp_1.sendWhatsAppMessage)({
                                     to: customer.phone_number,
-                                    message: `✅ *Payment Received*\n\nHello ${customer.full_name},\n\nPayment of AED ${amount} received!\n\nThank you!`,
+                                    message: `Renewal Successful\n\nHello ${customer.full_name},\n\nYour subscription has been renewed!\n\nAmount: ${currency} ${amount}\nValid until: ${endFormatted}\n\nThank you for continuing with us!`,
+                                    templateName: 'PAYMENT_RECEIVED',
+                                    contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
                                 });
                             }
-                            catch { }
+                            catch (e) {
+                                console.error('[Webhook] WhatsApp send failed:', e.message);
+                            }
                         }
                         await (0, email_1.sendEmail)({
                             to: customerOwnerEmail,
-                            subject: `✅ Payment Received - ${customer.full_name}`,
-                            body: `<h2>Payment Confirmed</h2><p>${customer.full_name} paid AED ${amount}</p>`,
+                            subject: `✅ Subscription Renewed - ${customer.full_name}`,
+                            body: `<h2>Subscription Renewed</h2>
+<p><strong>${customer.full_name}</strong> has renewed their subscription.</p>
+<p><strong>Amount:</strong> ${currency} ${amount}</p>
+<p><strong>Valid until:</strong> ${endFormatted}</p>`,
                         });
                         // Update payment link
                         const paymentLinks = await prisma_1.prisma.paymentLink.findMany({
@@ -76,17 +217,114 @@ router.post('/stripe', async (req, res) => {
                             });
                         }
                     }
+                    else {
+                        console.log(`[Webhook] Customer not found for renewal — customerId: ${customerId}, ownerId: ${ownerUser.id}`);
+                    }
+                    break;
+                }
+                // Handle customer tiffin payment (legacy flow)
+                if (customerId) {
+                    const customerOwnerEmail = session.metadata?.customer_owner_email;
+                    console.log(`[Webhook] Legacy customer payment — customerId: ${customerId}, ownerEmail: ${customerOwnerEmail}`);
+                    if (!customerOwnerEmail) {
+                        console.log('[Webhook] No customer_owner_email in metadata for legacy flow, skipping');
+                        break;
+                    }
+                    const ownerUser = await prisma_1.prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+                    if (!ownerUser) {
+                        console.log(`[Webhook] Owner user not found for legacy flow: ${customerOwnerEmail}`);
+                        break;
+                    }
+                    const customer = await prisma_1.prisma.customer.findFirst({
+                        where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
+                    });
+                    if (customer) {
+                        const amount = session.amount_total / 100;
+                        const currency = (session.currency || 'aed').toUpperCase();
+                        console.log(`[Webhook] Processing legacy payment for ${customer.full_name} — ${currency} ${amount}`);
+                        // Extend subscription by 1 month from current end_date (or from today if no end_date)
+                        const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
+                        const newStartDate = new Date();
+                        const newEndDate = (0, date_fns_1.addMonths)(baseDate, 1);
+                        await prisma_1.prisma.customer.update({
+                            where: { id: customer.id },
+                            data: {
+                                payment_status: 'Paid',
+                                last_payment_date: new Date(),
+                                last_payment_amount: amount,
+                                status: 'active',
+                                active: true,
+                                inactive_reason: null,
+                                reminder_before_sent: false,
+                                reminder_after_sent: false,
+                                start_date: newStartDate,
+                                end_date: newEndDate,
+                                due_date: newEndDate,
+                                paid_days: 30,
+                                delivered_days: 0,
+                                days_remaining: 30,
+                            },
+                        });
+                        const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
+                        if (customer.phone_number) {
+                            try {
+                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                    to: customer.phone_number,
+                                    message: `Payment Received\n\nHello ${customer.full_name},\n\nPayment of ${currency} ${amount} received!\n\nYour subscription is now active until ${endFormatted}.\n\nThank you!`,
+                                    templateName: 'PAYMENT_RECEIVED',
+                                    contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
+                                });
+                            }
+                            catch (e) {
+                                console.error('[Webhook] WhatsApp send failed:', e.message);
+                            }
+                        }
+                        await (0, email_1.sendEmail)({
+                            to: customerOwnerEmail,
+                            subject: `✅ Payment Received - ${customer.full_name}`,
+                            body: `<h2>Payment Confirmed</h2>
+<p><strong>${customer.full_name}</strong> has paid <strong>${currency} ${amount}</strong>.</p>
+<p><strong>Subscription renewed:</strong> ${(0, date_fns_1.format)(newStartDate, 'dd MMM yyyy')} → ${endFormatted}</p>
+<p>The customer is now active on your dashboard.</p>`,
+                        });
+                        // Update payment link
+                        const paymentLinks = await prisma_1.prisma.paymentLink.findMany({
+                            where: { customer_id: customerId, created_by: ownerUser.id, stripe_checkout_session_id: session.id },
+                        });
+                        if (paymentLinks.length > 0) {
+                            await prisma_1.prisma.paymentLink.update({
+                                where: { id: paymentLinks[0].id },
+                                data: { status: 'paid', paid_at: new Date(), stripe_payment_intent_id: session.payment_intent },
+                            });
+                        }
+                    }
+                    else {
+                        console.log(`[Webhook] Customer not found for legacy payment — customerId: ${customerId}, ownerId: ${ownerUser.id}`);
+                    }
                     break;
                 }
                 // Handle platform subscription
                 if (session.mode === 'subscription' && userEmail) {
-                    const subscription = await stripe_1.stripe.subscriptions.retrieve(session.subscription);
+                    // Support both old API (session.subscription) and new basil API structure
+                    const sessionSubscriptionId = typeof session.subscription === 'string'
+                        ? session.subscription
+                        : session.subscription?.id;
+                    console.log(`[Webhook] Platform subscription — userEmail: ${userEmail}, subscriptionId: ${sessionSubscriptionId}`);
+                    if (!sessionSubscriptionId) {
+                        console.log('[Webhook] No subscription ID found on checkout session');
+                        break;
+                    }
+                    const subscription = await stripe_1.stripe.subscriptions.retrieve(sessionSubscriptionId);
                     const user = await prisma_1.prisma.user.findUnique({ where: { email: userEmail } });
-                    if (!user)
+                    if (!user) {
+                        console.log(`[Webhook] User not found for platform subscription: ${userEmail}`);
                         break;
+                    }
                     // Don't override admin-assigned plans
-                    if (user.subscription_source === 'admin')
+                    if (user.subscription_source === 'admin') {
+                        console.log(`[Webhook] Skipping — user ${userEmail} has admin-assigned plan`);
                         break;
+                    }
                     // Upsert subscription record
                     const existingSubs = await prisma_1.prisma.subscription.findMany({ where: { user_email: userEmail } });
                     const subData = {
@@ -138,17 +376,24 @@ router.post('/stripe', async (req, res) => {
                             trial_cancelled_at: new Date(),
                         },
                     });
+                    console.log(`[Webhook] Platform subscription activated for ${userEmail}`);
                     await (0, email_1.sendEmail)({
                         to: userEmail,
                         subject: '✅ Payment Confirmed - TiffinHub Manager',
                         body: `Your Premium subscription is now active. Next billing: ${new Date(subscription.current_period_end * 1000).toLocaleDateString()}`,
                     });
                 }
+                else {
+                    console.log(`[Webhook] checkout.session.completed — no matching handler (mode: ${session.mode}, userEmail: ${userEmail}, customerId: ${customerId})`);
+                }
                 break;
             }
             case 'invoice.payment_succeeded': {
                 const invoice = event.data.object;
                 const customerId = invoice.metadata?.customer_id;
+                // Support both old API (invoice.subscription) and new basil API (invoice.parent.subscription_details.subscription)
+                const invoiceSubscriptionId = invoice.subscription || invoice.parent?.subscription_details?.subscription;
+                console.log(`[Webhook] invoice.payment_succeeded — invoiceId: ${invoice.id}, customerId: ${customerId}, subscriptionId: ${invoiceSubscriptionId}`);
                 if (customerId) {
                     // Customer tiffin payment - same as checkout.session.completed for customer
                     const customerOwnerEmail = invoice.metadata?.customer_owner_email;
@@ -160,9 +405,26 @@ router.post('/stripe', async (req, res) => {
                             });
                             if (customer) {
                                 const amount = invoice.amount_paid / 100;
+                                const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
+                                const newEndDate = (0, date_fns_1.addMonths)(baseDate, 1);
                                 await prisma_1.prisma.customer.update({
                                     where: { id: customer.id },
-                                    data: { payment_status: 'Paid', last_payment_date: new Date(), last_payment_amount: amount, status: 'active', active: true, reminder_before_sent: false, reminder_after_sent: false },
+                                    data: {
+                                        payment_status: 'Paid',
+                                        last_payment_date: new Date(),
+                                        last_payment_amount: amount,
+                                        status: 'active',
+                                        active: true,
+                                        inactive_reason: null,
+                                        reminder_before_sent: false,
+                                        reminder_after_sent: false,
+                                        start_date: new Date(),
+                                        end_date: newEndDate,
+                                        due_date: newEndDate,
+                                        paid_days: 30,
+                                        delivered_days: 0,
+                                        days_remaining: 30,
+                                    },
                                 });
                             }
                         }
@@ -170,9 +432,9 @@ router.post('/stripe', async (req, res) => {
                     break;
                 }
                 // Platform subscription renewal
-                if (invoice.subscription) {
-                    const subscription = await stripe_1.stripe.subscriptions.retrieve(invoice.subscription);
-                    const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: invoice.subscription } });
+                if (invoiceSubscriptionId) {
+                    const subscription = await stripe_1.stripe.subscriptions.retrieve(invoiceSubscriptionId);
+                    const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: invoiceSubscriptionId } });
                     if (subs.length > 0) {
                         const sub = subs[0];
                         await prisma_1.prisma.subscription.update({
@@ -188,7 +450,7 @@ router.post('/stripe', async (req, res) => {
                         await prisma_1.prisma.paymentHistory.create({
                             data: {
                                 user_email: sub.user_email,
-                                subscription_id: invoice.subscription,
+                                subscription_id: invoiceSubscriptionId,
                                 amount: invoice.amount_paid / 100,
                                 currency: invoice.currency?.toUpperCase(),
                                 status: 'succeeded',
@@ -211,12 +473,21 @@ router.post('/stripe', async (req, res) => {
                             });
                         }
                     }
+                    else {
+                        console.log(`[Webhook] No subscription record found in DB for ${invoiceSubscriptionId}`);
+                    }
+                }
+                else {
+                    console.log(`[Webhook] invoice.payment_succeeded — no customerId and no subscriptionId, nothing to process`);
                 }
                 break;
             }
             case 'invoice.payment_failed': {
                 const invoice = event.data.object;
                 const customerId = invoice.metadata?.customer_id;
+                // Support both old API (invoice.subscription) and new basil API (invoice.parent.subscription_details.subscription)
+                const invoiceSubId = invoice.subscription || invoice.parent?.subscription_details?.subscription;
+                console.log(`[Webhook] invoice.payment_failed — invoiceId: ${invoice.id}, customerId: ${customerId}, subscriptionId: ${invoiceSubId}`);
                 if (customerId) {
                     const customerOwnerEmail = invoice.metadata?.customer_owner_email;
                     if (customerOwnerEmail) {
@@ -235,15 +506,15 @@ router.post('/stripe', async (req, res) => {
                     }
                     break;
                 }
-                if (invoice.subscription) {
-                    const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: invoice.subscription } });
+                if (invoiceSubId) {
+                    const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: invoiceSubId } });
                     if (subs.length > 0) {
                         const sub = subs[0];
                         await prisma_1.prisma.subscription.update({ where: { id: sub.id }, data: { status: 'past_due' } });
                         await prisma_1.prisma.paymentHistory.create({
                             data: {
                                 user_email: sub.user_email,
-                                subscription_id: invoice.subscription,
+                                subscription_id: invoiceSubId,
                                 amount: invoice.amount_due / 100,
                                 currency: invoice.currency?.toUpperCase(),
                                 status: 'failed',
@@ -270,6 +541,7 @@ router.post('/stripe', async (req, res) => {
             }
             case 'customer.subscription.updated': {
                 const subscription = event.data.object;
+                console.log(`[Webhook] customer.subscription.updated — subscriptionId: ${subscription.id}, status: ${subscription.status}`);
                 const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: subscription.id } });
                 if (subs.length > 0) {
                     const sub = subs[0];
@@ -299,6 +571,7 @@ router.post('/stripe', async (req, res) => {
             }
             case 'customer.subscription.deleted': {
                 const subscription = event.data.object;
+                console.log(`[Webhook] customer.subscription.deleted — subscriptionId: ${subscription.id}`);
                 const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: subscription.id } });
                 if (subs.length > 0) {
                     const sub = subs[0];
@@ -322,10 +595,11 @@ router.post('/stripe', async (req, res) => {
                 break;
             }
         }
+        console.log(`[Webhook] Successfully processed event: ${event.type}`);
         res.json({ received: true });
     }
     catch (error) {
-        console.error('Error processing webhook:', error);
+        console.error(`[Webhook] Error processing event ${event?.type}:`, error);
         res.status(500).json({ error: error.message });
     }
 });

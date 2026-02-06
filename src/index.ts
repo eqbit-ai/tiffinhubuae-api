@@ -46,6 +46,18 @@ app.use('/api', entityRoutes);
 
 app.listen(PORT, () => {
   console.log(`TiffinHub API running on port ${PORT}`);
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    console.warn('[WARNING] STRIPE_WEBHOOK_SECRET is not set — Stripe webhooks will fail signature verification');
+  }
+  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_WHATSAPP_FROM) {
+    console.warn('[WARNING] Twilio WhatsApp not fully configured — missing:', [
+      !process.env.TWILIO_ACCOUNT_SID && 'TWILIO_ACCOUNT_SID',
+      !process.env.TWILIO_AUTH_TOKEN && 'TWILIO_AUTH_TOKEN',
+      !process.env.TWILIO_WHATSAPP_FROM && 'TWILIO_WHATSAPP_FROM',
+    ].filter(Boolean).join(', '));
+  } else {
+    console.log(`[WhatsApp] Twilio configured — from: ${process.env.TWILIO_WHATSAPP_FROM}`);
+  }
   startCronJobs();
 });
 

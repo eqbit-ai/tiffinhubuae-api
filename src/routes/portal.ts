@@ -47,24 +47,18 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
     }
 
-    // DEMO BYPASS: Skip rate limiting for demo numbers
-    const demoNumbers = ['+918284852687', '+918899776655'];
-    const isDemoNumber = demoNumbers.includes(phone_number);
+    // Rate limiting: Max 5 OTPs per phone per hour
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentOTPs = await prisma.customerOTP.count({
+      where: {
+        phone_number,
+        merchant_id,
+        created_at: { gte: oneHourAgo },
+      },
+    });
 
-    if (!isDemoNumber) {
-      // Rate limiting: Max 5 OTPs per phone per hour
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-      const recentOTPs = await prisma.customerOTP.count({
-        where: {
-          phone_number,
-          merchant_id,
-          created_at: { gte: oneHourAgo },
-        },
-      });
-
-      if (recentOTPs >= 5) {
-        return res.status(429).json({ error: 'Too many OTP requests. Please try again later.' });
-      }
+    if (recentOTPs >= 5) {
+      return res.status(429).json({ error: 'Too many OTP requests. Please try again later.' });
     }
 
     // Generate OTP and save
@@ -85,7 +79,9 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
     try {
       await sendWhatsAppMessage({
         to: phone_number,
-        message: `🔐 Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
+        message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
+        templateName: 'OTP_LOGIN',
+        contentVariables: { '1': 'TiffinHub', '2': otpCode },
       });
     } catch (error) {
       console.error('Failed to send WhatsApp OTP:', error);
@@ -107,45 +103,40 @@ router.post('/auth/verify-otp', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Phone number, merchant ID, and OTP are required' });
     }
 
-    // DEMO BYPASS: Allow "123456" as universal OTP for demos
-    const isDemoBypass = otp === '123456';
+    // Find the most recent OTP for this phone/merchant
+    const otpRecord = await prisma.customerOTP.findFirst({
+      where: {
+        phone_number,
+        merchant_id,
+        verified: false,
+        expires_at: { gt: new Date() },
+      },
+      orderBy: { created_at: 'desc' },
+    });
 
-    if (!isDemoBypass) {
-      // Find the most recent OTP for this phone/merchant
-      const otpRecord = await prisma.customerOTP.findFirst({
-        where: {
-          phone_number,
-          merchant_id,
-          verified: false,
-          expires_at: { gt: new Date() },
-        },
-        orderBy: { created_at: 'desc' },
-      });
+    if (!otpRecord) {
+      return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
+    }
 
-      if (!otpRecord) {
-        return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
-      }
+    // Check max attempts
+    if (otpRecord.attempts >= 5) {
+      return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
+    }
 
-      // Check max attempts
-      if (otpRecord.attempts >= 5) {
-        return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
-      }
-
-      // Verify OTP
-      if (otpRecord.otp_code !== otp) {
-        await prisma.customerOTP.update({
-          where: { id: otpRecord.id },
-          data: { attempts: otpRecord.attempts + 1 },
-        });
-        return res.status(400).json({ error: 'Invalid OTP' });
-      }
-
-      // Mark OTP as verified
+    // Verify OTP
+    if (otpRecord.otp_code !== otp) {
       await prisma.customerOTP.update({
         where: { id: otpRecord.id },
-        data: { verified: true },
+        data: { attempts: otpRecord.attempts + 1 },
       });
+      return res.status(400).json({ error: 'Invalid OTP' });
     }
+
+    // Mark OTP as verified
+    await prisma.customerOTP.update({
+      where: { id: otpRecord.id },
+      data: { verified: true },
+    });
 
     // Find customer
     const customer = await prisma.customer.findFirst({
@@ -869,7 +860,7 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
 ${address ? `<p><strong>Address:</strong> ${address}</p>` : ''}
 <p>Please log in to your dashboard to approve or reject this registration.</p>`,
       });
-    } catch {}
+    } catch (e: any) { console.error('[Portal] Send failed:', e.message); }
 
     // Create notification
     await prisma.notification.create({
