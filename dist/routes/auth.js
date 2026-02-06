@@ -5,8 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
+const email_1 = require("../services/email");
 const router = (0, express_1.Router)();
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
@@ -90,6 +92,7 @@ router.get('/me', auth_1.authMiddleware, async (req, res) => {
         safeUser.created_date = safeUser.created_at;
     if (safeUser.updated_at)
         safeUser.updated_date = safeUser.updated_at;
+    safeUser.whatsapp_limit = Math.max(safeUser.whatsapp_limit || 400, 400);
     res.json(safeUser);
 });
 // PUT /api/auth/me
@@ -178,6 +181,73 @@ router.delete('/delete-account', auth_1.authMiddleware, async (req, res) => {
             },
         });
         res.json({ success: true });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// POST /api/auth/forgot-password
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+        const user = await prisma_1.prisma.user.findUnique({ where: { email } });
+        if (user && user.subscription_status !== 'deleted') {
+            const token = crypto_1.default.randomBytes(32).toString('hex');
+            const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+            await prisma_1.prisma.user.update({
+                where: { id: user.id },
+                data: { reset_token: token, reset_token_expires: expires },
+            });
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+            const resetLink = `${frontendUrl}/reset-password?token=${token}`;
+            await (0, email_1.sendEmail)({
+                to: email,
+                subject: 'Reset your TiffinHub password',
+                body: `
+          <h2>Password Reset</h2>
+          <p>You requested a password reset. Click the link below to set a new password:</p>
+          <p><a href="${resetLink}">${resetLink}</a></p>
+          <p>This link expires in 1 hour.</p>
+          <p>If you didn't request this, you can safely ignore this email.</p>
+        `,
+            });
+        }
+        // Always return success to avoid revealing whether the email exists
+        res.json({ message: 'If an account with that email exists, a reset link has been sent.' });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// POST /api/auth/reset-password
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { token, password } = req.body;
+        if (!token || !password) {
+            return res.status(400).json({ error: 'Token and password are required' });
+        }
+        const user = await prisma_1.prisma.user.findFirst({
+            where: {
+                reset_token: token,
+                reset_token_expires: { gt: new Date() },
+            },
+        });
+        if (!user) {
+            return res.status(400).json({ error: 'Invalid or expired reset token' });
+        }
+        const password_hash = await bcryptjs_1.default.hash(password, 12);
+        await prisma_1.prisma.user.update({
+            where: { id: user.id },
+            data: {
+                password_hash,
+                reset_token: null,
+                reset_token_expires: null,
+            },
+        });
+        res.json({ message: 'Password has been reset successfully' });
     }
     catch (error) {
         res.status(500).json({ error: error.message });
