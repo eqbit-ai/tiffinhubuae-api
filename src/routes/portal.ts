@@ -358,7 +358,7 @@ router.post('/renew', customerAuthMiddleware, async (req: CustomerAuthRequest, r
       },
       success_url: `${appUrl}/portal/payment-success?type=renewal`,
       cancel_url: `${appUrl}/portal/dashboard?cancelled=true`,
-    }, { stripeAccount: merchant.stripe_connect_account_id });
+    }, { stripeAccount: merchant.stripe_connect_account_id ?? undefined });
 
     // Create payment link record
     await prisma.paymentLink.create({
@@ -700,7 +700,7 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
       },
       success_url: `${appUrl}/portal/payment-success?type=order&order_id=${order.id}`,
       cancel_url: `${appUrl}/portal/orders?cancelled=true`,
-    }, { stripeAccount: merchant.stripe_connect_account_id });
+    }, { stripeAccount: merchant.stripe_connect_account_id ?? undefined });
 
     await prisma.oneTimeOrder.update({
       where: { id: order.id },
@@ -904,7 +904,7 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
           },
           success_url: `${appUrl}/registration-success?type=paid`,
           cancel_url: `${appUrl}/join/${merchant.id}?cancelled=true`,
-        }, { stripeAccount: merchant.stripe_connect_account_id });
+        }, { stripeAccount: merchant.stripe_connect_account_id ?? undefined });
 
         return res.json({ success: true, checkoutUrl: session.url, customerId: customer.id });
       }
