@@ -42,13 +42,6 @@ model User {
   whatsapp_number           String?
   currency                  String?   @default("AED")
   language                  String?   @default("en")
-  seasonal_mode             String?
-  seasonal_mode_start       String?
-  seasonal_mode_end         String?
-  ramadan_lunch_time        String?
-  ramadan_dinner_time       String?
-  ramadan_suhoor_time       String?
-  ramadan_iftar_time        String?
   reset_token               String?
   reset_token_expires       DateTime?
   is_super_admin            Boolean   @default(false)
