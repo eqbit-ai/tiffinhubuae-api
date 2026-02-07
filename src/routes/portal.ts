@@ -76,14 +76,14 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
     });
 
     // Send OTP via SMS
-    try {
-      await sendSMS({
-        to: phone_number,
-        message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
-      });
-    } catch (error) {
-      console.error('Failed to send SMS OTP:', error);
-      // Don't fail the request if SMS fails
+    const smsResult = await sendSMS({
+      to: phone_number,
+      message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
+    });
+
+    if (!smsResult || !smsResult.success) {
+      console.error('[Portal OTP] SMS not sent:', smsResult?.reason || 'unknown');
+      return res.status(500).json({ error: 'Failed to send OTP. Please try again later.' });
     }
 
     res.json({ success: true, message: 'OTP sent successfully' });

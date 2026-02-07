@@ -22,17 +22,12 @@ export async function sendSMS(params: SMSParams) {
   if (phoneNumber.startsWith('whatsapp:')) phoneNumber = phoneNumber.replace('whatsapp:', '');
   if (!phoneNumber.startsWith('+')) phoneNumber = '+' + phoneNumber;
 
-  try {
-    const result = await client.messages.create({
-      from: fromNumber,
-      to: phoneNumber,
-      body: params.message,
-    });
+  const result = await client.messages.create({
+    from: fromNumber,
+    to: phoneNumber,
+    body: params.message,
+  });
 
-    console.log(`[SMS] Message sent to ${phoneNumber} — SID: ${result.sid}, status: ${result.status}`);
-    return { success: true, messageSid: result.sid, status: result.status };
-  } catch (error: any) {
-    console.error(`[SMS] Failed to send to ${phoneNumber}:`, error.message);
-    throw error;
-  }
+  console.log(`[SMS] Message sent to ${phoneNumber} — SID: ${result.sid}, status: ${result.status}`);
+  return { success: true, messageSid: result.sid, status: result.status };
 }
