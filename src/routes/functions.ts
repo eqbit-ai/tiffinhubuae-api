@@ -1194,14 +1194,28 @@ router.post('/create-stripe-connect-account', async (req: AuthRequest, res) => {
     const user = req.user!;
     const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
 
+    // Map merchant currency to Stripe-supported country code
+    const currencyToCountry: Record<string, string> = {
+      'AED': 'AE', 'INR': 'IN', 'USD': 'US', 'GBP': 'GB', 'EUR': 'DE',
+      'CAD': 'CA', 'AUD': 'AU', 'SGD': 'SG', 'MYR': 'MY', 'SAR': 'SA',
+      'QAR': 'QA', 'BHD': 'BH', 'KWD': 'KW', 'OMR': 'OM', 'EGP': 'EG',
+      'PKR': 'PK', 'BDT': 'BD', 'LKR': 'LK', 'NPR': 'NP', 'NZD': 'NZ',
+      'ZAR': 'ZA', 'KES': 'KE', 'NGN': 'NG', 'GHS': 'GH', 'THB': 'TH',
+      'JPY': 'JP', 'HKD': 'HK', 'PHP': 'PH', 'IDR': 'ID', 'BRL': 'BR',
+      'MXN': 'MX', 'COP': 'CO', 'CLP': 'CL', 'PEN': 'PE', 'SEK': 'SE',
+      'NOK': 'NO', 'DKK': 'DK', 'CHF': 'CH', 'PLN': 'PL', 'CZK': 'CZ',
+      'HUF': 'HU', 'RON': 'RO', 'BGN': 'BG', 'HRK': 'HR', 'TRY': 'TR',
+    };
+    const country = currencyToCountry[(user.currency || 'AED').toUpperCase()] || 'AE';
+
     let accountId = user.stripe_connect_account_id;
 
     // If user already has a Connect account, reuse it
     if (!accountId) {
-      console.log('[StripeConnect] Creating new account for', user.email);
+      console.log('[StripeConnect] Creating new account for', user.email, 'country:', country);
       const account = await stripe.accounts.create({
         type: 'express',
-        country: 'AE',
+        country,
         email: user.email,
         capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
         business_type: 'company',
