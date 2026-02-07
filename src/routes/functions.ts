@@ -886,9 +886,20 @@ router.post('/send-customer-payment-reminder', checkPremiumAccess, async (req: A
 
     const cCurrency = user.currency || 'AED';
     const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment of ${cCurrency} ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
+    const smsLimit = Math.max(user.whatsapp_limit || 200, 200);
+    const smsSent = user.whatsapp_sent_count || 0;
+    if (smsSent >= smsLimit) {
+      return res.status(403).json({ error: `Message limit reached (${smsLimit}). Please reset your cycle or upgrade.` });
+    }
+
     await sendSMS({
       to: customer.phone_number,
       message,
+    });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { whatsapp_sent_count: smsSent + 1 },
     });
 
     res.json({ success: true, message: 'Reminder sent' });
@@ -1324,16 +1335,13 @@ export async function runAutoPaymentReminders() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const threeDaysFromNow = new Date(today);
-  threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+  const startOfToday = new Date(today);
+  startOfToday.setHours(0, 0, 0, 0);
+  const endOfToday = new Date(today);
+  endOfToday.setHours(23, 59, 59, 999);
 
   const threeDaysAgo = new Date(today);
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-
-  const startOfTargetDay = new Date(threeDaysFromNow);
-  startOfTargetDay.setHours(0, 0, 0, 0);
-  const endOfTargetDay = new Date(threeDaysFromNow);
-  endOfTargetDay.setHours(23, 59, 59, 999);
 
   const startOfOverdueDay = new Date(threeDaysAgo);
   startOfOverdueDay.setHours(0, 0, 0, 0);
@@ -1355,13 +1363,13 @@ export async function runAutoPaymentReminders() {
   const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
   for (const user of users) {
-    // --- Upcoming reminders (end_date in 3 days) ---
+    // --- Upcoming reminders (end_date is today — last day of subscription) ---
     const upcomingCustomers = await prisma.customer.findMany({
       where: {
         created_by: user.id,
         is_deleted: false,
         active: true,
-        end_date: { gte: startOfTargetDay, lte: endOfTargetDay },
+        end_date: { gte: startOfToday, lte: endOfToday },
         reminder_before_sent: { not: true },
         phone_number: { not: null },
       },
@@ -1545,6 +1553,12 @@ export async function runTrialExpiryCheck() {
       const user = await prisma.user.findUnique({ where: { id: customer.created_by } });
       if (!user) continue;
 
+      // Only premium merchants can use SMS features
+      const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai') || user.is_super_admin === true;
+      const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
+      const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
+      if (!hasPremium) continue;
+
       let paymentLink = '';
       if (user.stripe_connect_account_id && user.payment_account_connected && user.payment_verification_status === 'verified') {
         const amount = customer.payment_amount || 0;
@@ -1616,7 +1630,7 @@ export async function runTrialExpiryCheck() {
                   <p style="margin: 4px 0; font-size: 14px; color: #78350f;">Amount: ${trialCurrency} ${customer.payment_amount || 0}/month</p>
                 </div>
                 <p style="font-size: 14px; color: #475569;">
-                  ${customer.phone_number ? 'A WhatsApp message with a payment link has been sent to the customer.' : 'No phone number on file — consider reaching out manually.'}
+                  ${customer.phone_number ? 'An SMS with a payment link has been sent to the customer.' : 'No phone number on file — consider reaching out manually.'}
                 </p>
                 <div style="text-align: center; margin: 20px 0;">
                   <a href="${appUrl}" style="background: #f59e0b; color: white; padding: 10px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 15px;">
@@ -1638,7 +1652,68 @@ export async function runTrialExpiryCheck() {
   return { success: true, trialReminders: sentCount };
 }
 
-// ─── Auto Meal Rating Request (cron - runs every 15 days) ──────
+// ─── Send Meal Rating Request (manual) ──────────────────────────
+router.post('/send-meal-rating-request', checkPremiumAccess, async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+    const { customerIds } = req.body as { customerIds: string[] };
+    if (!customerIds || !Array.isArray(customerIds) || customerIds.length === 0) {
+      return res.status(400).json({ error: 'customerIds array required' });
+    }
+
+    const smsLimit = Math.max(user.whatsapp_limit || 200, 200);
+    let smsSent = user.whatsapp_sent_count || 0;
+
+    const customers = await prisma.customer.findMany({
+      where: { id: { in: customerIds }, created_by: user.id, is_deleted: false, active: true, phone_number: { not: null } },
+    });
+
+    let sentCount = 0;
+    const errors: string[] = [];
+
+    for (const customer of customers) {
+      if (!customer.phone_number) continue;
+      if (smsSent >= smsLimit) {
+        errors.push(`Message limit reached after ${sentCount} sends`);
+        break;
+      }
+
+      try {
+        await prisma.mealRating.create({
+          data: {
+            customer_id: customer.id,
+            customer_name: customer.full_name,
+            rating: 0,
+            meal_type: customer.meal_type,
+            meal_date: format(new Date(), 'yyyy-MM-dd'),
+            created_by: user.id,
+          },
+        });
+
+        await sendSMS({
+          to: customer.phone_number,
+          message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
+        });
+
+        smsSent++;
+        sentCount++;
+      } catch (err: any) {
+        errors.push(`Failed for ${customer.full_name}: ${err.message}`);
+      }
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { whatsapp_sent_count: smsSent },
+    });
+
+    res.json({ success: true, sent: sentCount, errors });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Auto Meal Rating Request (kept for manual trigger only) ──────
 export async function runMealRatingRequests() {
   const fifteenDaysAgo = new Date();
   fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);

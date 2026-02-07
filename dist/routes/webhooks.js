@@ -4,7 +4,7 @@ const express_1 = require("express");
 const prisma_1 = require("../lib/prisma");
 const stripe_1 = require("../services/stripe");
 const email_1 = require("../services/email");
-const whatsapp_1 = require("../services/whatsapp");
+const sms_1 = require("../services/sms");
 const date_fns_1 = require("date-fns");
 const router = (0, express_1.Router)();
 // POST /api/webhooks/stripe
@@ -116,11 +116,9 @@ router.post('/stripe', async (req, res) => {
                         // Send WhatsApp to merchant
                         if (ownerUser.whatsapp_number && ownerUser.whatsapp_notifications_enabled) {
                             try {
-                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                await (0, sms_1.sendSMS)({
                                     to: ownerUser.whatsapp_number,
                                     message: `New Order\n\nCustomer: ${order.customer_name}\nAmount: ${order.currency} ${order.total_amount}\nDelivery: ${order.delivery_date || 'TBD'}\n\nPlease check your dashboard.`,
-                                    templateName: 'NEW_ORDER_MERCHANT',
-                                    contentVariables: { '1': order.customer_name || 'Customer', '2': order.currency || 'AED', '3': String(order.total_amount), '4': order.delivery_date || 'TBD' },
                                 });
                             }
                             catch (e) {
@@ -130,11 +128,9 @@ router.post('/stripe', async (req, res) => {
                         // Confirm to customer
                         if (customer?.phone_number) {
                             try {
-                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                await (0, sms_1.sendSMS)({
                                     to: customer.phone_number,
                                     message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n${order.delivery_date ? `Delivery: ${order.delivery_date}` : ''}\n\nThank you!`,
-                                    templateName: 'ORDER_CONFIRMED',
-                                    contentVariables: { '1': customer.full_name, '2': order.currency, '3': String(order.total_amount), '4': order.delivery_date ? `Delivery: ${order.delivery_date}` : '' },
                                 });
                             }
                             catch (e) {
@@ -187,11 +183,9 @@ router.post('/stripe', async (req, res) => {
                         const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
                         if (customer.phone_number) {
                             try {
-                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                await (0, sms_1.sendSMS)({
                                     to: customer.phone_number,
                                     message: `Renewal Successful\n\nHello ${customer.full_name},\n\nYour subscription has been renewed!\n\nAmount: ${currency} ${amount}\nValid until: ${endFormatted}\n\nThank you for continuing with us!`,
-                                    templateName: 'PAYMENT_RECEIVED',
-                                    contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
                                 });
                             }
                             catch (e) {
@@ -219,6 +213,80 @@ router.post('/stripe', async (req, res) => {
                     }
                     else {
                         console.log(`[Webhook] Customer not found for renewal — customerId: ${customerId}, ownerId: ${ownerUser.id}`);
+                    }
+                    break;
+                }
+                // Handle trial conversion payment
+                if (customerId && session.metadata?.payment_type === 'trial_conversion') {
+                    const customerOwnerEmail = session.metadata?.customer_owner_email;
+                    console.log(`[Webhook] Trial conversion payment — customerId: ${customerId}, ownerEmail: ${customerOwnerEmail}`);
+                    if (!customerOwnerEmail) {
+                        console.log('[Webhook] No customer_owner_email for trial conversion, skipping');
+                        break;
+                    }
+                    const ownerUser = await prisma_1.prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+                    if (!ownerUser) {
+                        console.log(`[Webhook] Owner user not found for trial conversion: ${customerOwnerEmail}`);
+                        break;
+                    }
+                    const customer = await prisma_1.prisma.customer.findFirst({
+                        where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
+                    });
+                    if (customer) {
+                        const amount = session.amount_total / 100;
+                        const currency = (session.currency || 'aed').toUpperCase();
+                        console.log(`[Webhook] Processing trial conversion for ${customer.full_name} — ${currency} ${amount}`);
+                        const newStartDate = new Date();
+                        const newEndDate = (0, date_fns_1.addMonths)(newStartDate, 1);
+                        await prisma_1.prisma.customer.update({
+                            where: { id: customer.id },
+                            data: {
+                                payment_status: 'Paid',
+                                last_payment_date: new Date(),
+                                last_payment_amount: amount,
+                                status: 'active',
+                                active: true,
+                                is_trial: false,
+                                trial_converted: true,
+                                inactive_reason: null,
+                                reminder_before_sent: false,
+                                reminder_after_sent: false,
+                                start_date: newStartDate,
+                                end_date: newEndDate,
+                                due_date: newEndDate,
+                                paid_days: 30,
+                                delivered_days: 0,
+                                days_remaining: 30,
+                            },
+                        });
+                        const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
+                        if (customer.phone_number) {
+                            try {
+                                await (0, sms_1.sendSMS)({
+                                    to: customer.phone_number,
+                                    message: `Payment Received!\n\nHello ${customer.full_name},\n\nYour payment of ${currency} ${amount} has been received. Your trial has been converted to a full subscription!\n\nActive until: ${endFormatted}\n\nThank you!`,
+                                });
+                            }
+                            catch (e) {
+                                console.error('[Webhook] WhatsApp send failed:', e.message);
+                            }
+                        }
+                        await (0, email_1.sendEmail)({
+                            to: customerOwnerEmail,
+                            subject: `✅ Trial Converted - ${customer.full_name}`,
+                            body: `<h2>Trial Converted to Paid</h2>
+<p><strong>${customer.full_name}</strong> has paid <strong>${currency} ${amount}</strong> and converted from trial to a full subscription.</p>
+<p><strong>Subscription:</strong> ${(0, date_fns_1.format)(newStartDate, 'dd MMM yyyy')} → ${endFormatted}</p>`,
+                        });
+                        const paymentLinks = await prisma_1.prisma.paymentLink.findMany({
+                            where: { customer_id: customerId, created_by: ownerUser.id, stripe_checkout_session_id: session.id },
+                        });
+                        if (paymentLinks.length > 0) {
+                            await prisma_1.prisma.paymentLink.update({
+                                where: { id: paymentLinks[0].id },
+                                data: { status: 'paid', paid_at: new Date(), stripe_payment_intent_id: session.payment_intent },
+                            });
+                        }
                     }
                     break;
                 }
@@ -268,11 +336,9 @@ router.post('/stripe', async (req, res) => {
                         const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
                         if (customer.phone_number) {
                             try {
-                                await (0, whatsapp_1.sendWhatsAppMessage)({
+                                await (0, sms_1.sendSMS)({
                                     to: customer.phone_number,
                                     message: `Payment Received\n\nHello ${customer.full_name},\n\nPayment of ${currency} ${amount} received!\n\nYour subscription is now active until ${endFormatted}.\n\nThank you!`,
-                                    templateName: 'PAYMENT_RECEIVED',
-                                    contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
                                 });
                             }
                             catch (e) {

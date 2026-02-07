@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 import { prisma } from './lib/prisma';
-import { runAutoPaymentReminders, runTrialExpiryCheck, runMealRatingRequests } from './routes/functions';
+import { runAutoPaymentReminders, runTrialExpiryCheck } from './routes/functions';
 
 export function startCronJobs() {
   // Run daily at 9 AM UAE time (5 AM UTC) - payment reminders & trial expiry
@@ -21,17 +21,6 @@ export function startCronJobs() {
       console.log('[Cron] Trial expiry check complete:', result);
     } catch (error) {
       console.error('[Cron] Trial expiry check failed:', error);
-    }
-  });
-
-  // Run every 15 days at 9 PM UAE time (5 PM UTC) - meal rating requests (1st and 15th)
-  cron.schedule('0 17 1,15 * *', async () => {
-    console.log('[Cron] Running meal rating requests...');
-    try {
-      const result = await runMealRatingRequests();
-      console.log('[Cron] Meal rating requests complete:', result);
-    } catch (error) {
-      console.error('[Cron] Meal rating requests failed:', error);
     }
   });
 
