@@ -501,6 +501,8 @@ router.get('/menu', customerAuthMiddleware, async (req: CustomerAuthRequest, res
       orderBy: [{ category: 'asc' }, { name: 'asc' }],
     });
 
+    const merchant = await prisma.user.findUnique({ where: { id: customer.merchant_id } });
+
     res.json({
       menu: menuItems.map((m) => ({
         id: m.id,
@@ -511,6 +513,7 @@ router.get('/menu', customerAuthMiddleware, async (req: CustomerAuthRequest, res
         meal_type: m.meal_type,
         image_url: m.image_url,
       })),
+      stripe_connected: !!(merchant?.stripe_connect_account_id && merchant?.payment_account_connected && merchant?.payment_verification_status === 'verified'),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -551,7 +554,7 @@ router.get('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, r
 router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, res: Response) => {
   try {
     const customer = req.customer!;
-    const { items, delivery_date, delivery_time, special_notes } = req.body;
+    const { items, delivery_date, delivery_time, special_notes, payment_method } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items are required' });
@@ -562,8 +565,12 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
       return res.status(404).json({ error: 'Merchant not found' });
     }
 
-    if (!merchant.stripe_connect_account_id || !merchant.payment_account_connected || merchant.payment_verification_status !== 'verified') {
-      return res.status(400).json({ error: 'Online payments are not available. Please contact your provider.' });
+    const isCash = payment_method === 'cash';
+
+    if (!isCash) {
+      if (!merchant.stripe_connect_account_id || !merchant.payment_account_connected || merchant.payment_verification_status !== 'verified') {
+        return res.status(400).json({ error: 'Online payments are not available. Please contact your provider.' });
+      }
     }
 
     // Validate and calculate items
@@ -597,11 +604,54 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
     }
 
     const currency = (merchant.currency || 'aed').toLowerCase();
+
+    // Cash payment — no Stripe, no platform fee
+    if (isCash) {
+      const order = await prisma.oneTimeOrder.create({
+        data: {
+          customer_id: customer.id,
+          customer_name: customer.full_name,
+          items: orderItems,
+          total_amount: totalAmount,
+          currency: currency.toUpperCase(),
+          delivery_date,
+          delivery_time,
+          special_notes,
+          status: 'confirmed',
+          payment_status: 'cash',
+          platform_fee: 0,
+          net_amount: totalAmount,
+          created_by: customer.merchant_id,
+        },
+      });
+
+      // Notify merchant
+      await prisma.notification.create({
+        data: {
+          user_email: merchant.email,
+          title: 'New Cash Order',
+          message: `${customer.full_name} placed a cash order for ${currency.toUpperCase()} ${totalAmount.toFixed(2)}`,
+          type: 'order',
+          notification_type: 'info',
+          customer_id: customer.id,
+          customer_name: customer.full_name,
+        },
+      });
+
+      return res.json({
+        success: true,
+        order_id: order.id,
+        cash: true,
+        total_amount: totalAmount,
+        currency: currency.toUpperCase(),
+      });
+    }
+
+    // Card payment — Stripe checkout
     const feePercentage = merchant.fee_percentage || 3.5;
     const platformFeeAmount = Math.round((totalAmount * feePercentage) / 100);
     const netAmount = totalAmount - platformFeeAmount;
 
-    // Create the order first (pending status)
     const order = await prisma.oneTimeOrder.create({
       data: {
         customer_id: customer.id,
@@ -622,7 +672,6 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
 
     const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
-    // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       payment_method_types: ['card'],
@@ -653,7 +702,6 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
       cancel_url: `${appUrl}/portal/orders?cancelled=true`,
     }, { stripeAccount: merchant.stripe_connect_account_id });
 
-    // Update order with stripe session id
     await prisma.oneTimeOrder.update({
       where: { id: order.id },
       data: { stripe_session_id: session.id },
