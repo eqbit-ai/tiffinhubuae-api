@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly } from '../middleware/auth';
 import { sendEmail } from '../services/email';
-import { sendWhatsAppMessage } from '../services/whatsapp';
+import { sendSMS } from '../services/sms';
 import { stripe, STRIPE_PREMIUM_PRICE_ID } from '../services/stripe';
 import { addDays, format } from 'date-fns';
 
@@ -55,11 +55,9 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
 
       if (customer.phone_number) {
         try {
-          await sendWhatsAppMessage({
+          await sendSMS({
             to: customer.phone_number,
             message: `Your ${paidDays}-day tiffin service is complete. Please renew your subscription to continue service.`,
-            templateName: 'SERVICE_ENDED',
-            contentVariables: { '1': customer.full_name, '2': 'tiffin service', '3': user.currency || 'AED', '4': String(customer.payment_amount || 0) },
           });
         } catch (e) { /* WhatsApp optional */ }
       }
@@ -115,7 +113,7 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
       return res.status(403).json({ error: `WhatsApp message limit reached (${whatsappLimit}). Please reset your cycle or upgrade.` });
     }
 
-    const result = await sendWhatsAppMessage({ to, message });
+    const result = await sendSMS({ to, message });
 
     await prisma.user.update({
       where: { id: user.id },
@@ -158,11 +156,9 @@ router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthReques
     const currency = user.currency || 'AED';
     const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\nAmount Due: ${currency} ${customer.payment_amount}\n${customer.due_date ? `Due Date: ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
 
-    await sendWhatsAppMessage({
+    await sendSMS({
       to: customer.phone_number,
       message,
-      templateName: 'PAYMENT_REMINDER',
-      contentVariables: { '1': customer.full_name, '2': currency, '3': String(customer.payment_amount || 0) },
     });
     await sendEmail({
       to: user.email,
@@ -203,11 +199,9 @@ router.post('/send-bulk-payment-reminders', checkPremiumAccess, async (req: Auth
       try {
         const bulkCurrency = user.currency || 'AED';
         const message = `Payment Reminder\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in ${customer.days_remaining} days.\n\nAmount Due: ${bulkCurrency} ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you!`;
-        await sendWhatsAppMessage({
+        await sendSMS({
           to: customer.phone_number,
           message,
-          templateName: 'PAYMENT_REMINDER',
-          contentVariables: { '1': customer.full_name, '2': bulkCurrency, '3': String(customer.payment_amount || 0) },
         });
         sentCount++;
       } catch (error: any) {
@@ -892,11 +886,9 @@ router.post('/send-customer-payment-reminder', checkPremiumAccess, async (req: A
 
     const cCurrency = user.currency || 'AED';
     const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment of ${cCurrency} ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
-    await sendWhatsAppMessage({
+    await sendSMS({
       to: customer.phone_number,
       message,
-      templateName: 'PAYMENT_REMINDER',
-      contentVariables: { '1': customer.full_name, '2': cCurrency, '3': String(customer.payment_amount || 0) },
     });
 
     res.json({ success: true, message: 'Reminder sent' });
@@ -1178,7 +1170,7 @@ router.post('/generate-customer-payment-link', async (req: AuthRequest, res) => 
     // Send payment link via WhatsApp if customer has phone
     if (customer.phone_number) {
       try {
-        await sendWhatsAppMessage({
+        await sendSMS({
           to: customer.phone_number,
           message: `Hello ${customer.full_name}!\n\nHere is your payment link for ${(user.currency || 'AED').toUpperCase()} ${amount}:\n${session.url}\n\nThank you!`,
         });
@@ -1423,11 +1415,9 @@ export async function runAutoPaymentReminders() {
 
         const endDateFormatted = customer.end_date ? format(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
 
-        await sendWhatsAppMessage({
+        await sendSMS({
           to: customer.phone_number,
           message: `Payment Reminder\n\nHello ${customer.full_name},\n\nYour tiffin subscription ends on ${endDateFormatted}.\n\nAmount: ${currency.toUpperCase()} ${amount}\n\nPay securely here: ${session.url}\n\nThank you!`,
-          templateName: 'PAYMENT_REMINDER_LINK',
-          contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url! },
         });
 
         await prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
@@ -1497,11 +1487,9 @@ export async function runAutoPaymentReminders() {
 
         const endDateFormatted = customer.end_date ? format(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
 
-        await sendWhatsAppMessage({
+        await sendSMS({
           to: customer.phone_number,
           message: `Payment Overdue\n\nHello ${customer.full_name},\n\nYour subscription expired on ${endDateFormatted} and payment is overdue.\n\nAmount Due: ${currency.toUpperCase()} ${amount}\n\nPay now to continue: ${session.url}\n\nThank you!`,
-          templateName: 'PAYMENT_OVERDUE',
-          contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url! },
         });
 
         await prisma.customer.update({
@@ -1590,11 +1578,9 @@ export async function runTrialExpiryCheck() {
       }
 
       const trialCurrency = ((user as any).currency || 'AED').toUpperCase();
-      await sendWhatsAppMessage({
+      await sendSMS({
         to: customer.phone_number,
         message: `Hello ${customer.full_name},\n\nYour free trial has ended! We hope you enjoyed our tiffin service.\n\nTo continue without interruption, please subscribe.\n\nAmount: ${trialCurrency} ${customer.payment_amount}/month${paymentLink}\n\nThank you!`,
-        templateName: 'SERVICE_ENDED',
-        contentVariables: { '1': customer.full_name, '2': 'free trial', '3': trialCurrency, '4': String(customer.payment_amount || 0) },
       });
 
       // Deactivate the trial customer
@@ -1688,11 +1674,9 @@ export async function runMealRatingRequests() {
         },
       });
 
-      await sendWhatsAppMessage({
+      await sendSMS({
         to: customer.phone_number,
         message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
-        templateName: 'FEEDBACK_REQUEST',
-        contentVariables: { '1': customer.full_name },
       });
       sentCount++;
     } catch (err) {
@@ -1889,11 +1873,9 @@ router.post('/approve-customer', async (req: AuthRequest, res) => {
         const paymentMsg = checkoutUrl
           ? `\n\nPay for your subscription here:\n${checkoutUrl}`
           : '';
-        await sendWhatsAppMessage({
+        await sendSMS({
           to: customer.phone_number,
           message: `Hello ${customer.full_name}! Your registration with ${user.business_name || 'our tiffin service'} has been approved. ${customer.is_trial ? 'Your 3-day free trial starts today!' : 'Welcome aboard!'}${paymentMsg}\n\nThank you!`,
-          templateName: 'REGISTRATION_STATUS',
-          contentVariables: { '1': customer.full_name, '2': user.business_name || 'our tiffin service', '3': 'approved', '4': customer.is_trial ? 'Your 3-day free trial starts today!' : 'Welcome aboard!' },
         });
       } catch (e: any) { console.error('[Functions] Send failed:', e.message); }
     }
@@ -1923,11 +1905,9 @@ router.post('/reject-customer', async (req: AuthRequest, res) => {
 
     if (customer.phone_number) {
       try {
-        await sendWhatsAppMessage({
+        await sendSMS({
           to: customer.phone_number,
           message: `Hello ${customer.full_name}, unfortunately your registration could not be approved at this time.${reason ? ` Reason: ${reason}` : ''}\n\nPlease contact us for more information.`,
-          templateName: 'REGISTRATION_STATUS',
-          contentVariables: { '1': customer.full_name, '2': user.business_name || 'our tiffin service', '3': 'not approved', '4': reason ? `Reason: ${reason}` : 'Please contact us for more information.' },
         });
       } catch (e: any) { console.error('[Functions] Send failed:', e.message); }
     }

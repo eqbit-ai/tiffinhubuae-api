@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 import { format, addDays, addMonths, differenceInDays, parseISO } from 'date-fns';
 import { sendEmail } from '../services/email';
 import { stripe } from '../services/stripe';
-import { sendWhatsAppMessage } from '../services/whatsapp';
+import { sendSMS } from '../services/sms';
 import { customerAuthMiddleware, CustomerAuthRequest, generateCustomerToken } from '../middleware/auth';
 
 const router = Router();
@@ -75,17 +75,15 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       },
     });
 
-    // Send OTP via WhatsApp
+    // Send OTP via SMS
     try {
-      await sendWhatsAppMessage({
+      await sendSMS({
         to: phone_number,
         message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
-        templateName: 'OTP_LOGIN',
-        contentVariables: { '1': 'TiffinHub', '2': otpCode },
       });
     } catch (error) {
-      console.error('Failed to send WhatsApp OTP:', error);
-      // Don't fail the request if WhatsApp fails
+      console.error('Failed to send SMS OTP:', error);
+      // Don't fail the request if SMS fails
     }
 
     res.json({ success: true, message: 'OTP sent successfully' });
