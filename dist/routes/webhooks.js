@@ -4,7 +4,7 @@ const express_1 = require("express");
 const prisma_1 = require("../lib/prisma");
 const stripe_1 = require("../services/stripe");
 const email_1 = require("../services/email");
-const sms_1 = require("../services/sms");
+const whatsapp_1 = require("../services/whatsapp");
 const date_fns_1 = require("date-fns");
 const router = (0, express_1.Router)();
 // POST /api/webhooks/stripe
@@ -116,7 +116,7 @@ router.post('/stripe', async (req, res) => {
                         // Send WhatsApp to merchant
                         if (ownerUser.whatsapp_number && ownerUser.whatsapp_notifications_enabled) {
                             try {
-                                await (0, sms_1.sendSMS)({
+                                await (0, whatsapp_1.sendMerchantWhatsApp)(ownerUser.id, {
                                     to: ownerUser.whatsapp_number,
                                     message: `New Order\n\nCustomer: ${order.customer_name}\nAmount: ${order.currency} ${order.total_amount}\nDelivery: ${order.delivery_date || 'TBD'}\n\nPlease check your dashboard.`,
                                 });
@@ -128,9 +128,11 @@ router.post('/stripe', async (req, res) => {
                         // Confirm to customer
                         if (customer?.phone_number) {
                             try {
-                                await (0, sms_1.sendSMS)({
+                                await (0, whatsapp_1.sendMerchantWhatsApp)(ownerUser.id, {
                                     to: customer.phone_number,
-                                    message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n${order.delivery_date ? `Delivery: ${order.delivery_date}` : ''}\n\nThank you!`,
+                                    message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n\nThank you!`,
+                                    templateName: 'ORDER_CONFIRMED',
+                                    contentVariables: { 'name': customer.full_name || 'Customer', 'currency': order.currency || 'AED', 'amount': String(order.total_amount) },
                                 });
                             }
                             catch (e) {
@@ -183,9 +185,11 @@ router.post('/stripe', async (req, res) => {
                         const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
                         if (customer.phone_number) {
                             try {
-                                await (0, sms_1.sendSMS)({
+                                await (0, whatsapp_1.sendMerchantWhatsApp)(ownerUser.id, {
                                     to: customer.phone_number,
                                     message: `Renewal Successful\n\nHello ${customer.full_name},\n\nYour subscription has been renewed!\n\nAmount: ${currency} ${amount}\nValid until: ${endFormatted}\n\nThank you for continuing with us!`,
+                                    templateName: 'PAYMENT_RECEIVED',
+                                    contentVariables: { 'name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(amount), 'end date': endFormatted },
                                 });
                             }
                             catch (e) {
@@ -262,9 +266,11 @@ router.post('/stripe', async (req, res) => {
                         const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
                         if (customer.phone_number) {
                             try {
-                                await (0, sms_1.sendSMS)({
+                                await (0, whatsapp_1.sendMerchantWhatsApp)(ownerUser.id, {
                                     to: customer.phone_number,
                                     message: `Payment Received!\n\nHello ${customer.full_name},\n\nYour payment of ${currency} ${amount} has been received. Your trial has been converted to a full subscription!\n\nActive until: ${endFormatted}\n\nThank you!`,
+                                    templateName: 'PAYMENT_RECEIVED',
+                                    contentVariables: { 'name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(amount), 'end date': endFormatted },
                                 });
                             }
                             catch (e) {
@@ -336,9 +342,11 @@ router.post('/stripe', async (req, res) => {
                         const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
                         if (customer.phone_number) {
                             try {
-                                await (0, sms_1.sendSMS)({
+                                await (0, whatsapp_1.sendMerchantWhatsApp)(ownerUser.id, {
                                     to: customer.phone_number,
                                     message: `Payment Received\n\nHello ${customer.full_name},\n\nPayment of ${currency} ${amount} received!\n\nYour subscription is now active until ${endFormatted}.\n\nThank you!`,
+                                    templateName: 'PAYMENT_RECEIVED',
+                                    contentVariables: { 'name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(amount), 'end date': endFormatted },
                                 });
                             }
                             catch (e) {

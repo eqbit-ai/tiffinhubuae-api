@@ -7,7 +7,7 @@ const express_1 = require("express");
 const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
 const email_1 = require("../services/email");
-const sms_1 = require("../services/sms");
+const whatsapp_1 = require("../services/whatsapp");
 const stripe_1 = require("../services/stripe");
 const date_fns_1 = require("date-fns");
 const router = (0, express_1.Router)();
@@ -51,7 +51,7 @@ router.post('/record-delivery', async (req, res) => {
             });
             if (customer.phone_number) {
                 try {
-                    await (0, sms_1.sendSMS)({
+                    await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                         to: customer.phone_number,
                         message: `Your ${paidDays}-day tiffin service is complete. Please renew your subscription to continue service.`,
                     });
@@ -99,16 +99,10 @@ router.post('/send-whatsapp-message', auth_1.checkPremiumAccess, async (req, res
         if (!to) {
             return res.status(400).json({ error: 'Missing required fields: to (or customerId with phone number)' });
         }
-        const smsLimit = Math.max(user.whatsapp_limit || 200, 200);
-        const smsSent = user.whatsapp_sent_count || 0;
-        if (smsSent >= smsLimit) {
-            return res.status(403).json({ error: `Message limit reached (${smsLimit}). Please reset your cycle or upgrade.` });
+        const result = await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, { to, message });
+        if (!result.success && result.reason === 'Message limit reached') {
+            return res.status(403).json({ error: 'Message limit reached (400). Limit resets on next billing cycle.' });
         }
-        const result = await (0, sms_1.sendSMS)({ to, message });
-        await prisma_1.prisma.user.update({
-            where: { id: user.id },
-            data: { whatsapp_sent_count: smsSent + 1 },
-        });
         await prisma_1.prisma.activityLog.create({
             data: {
                 user_email: user.email,
@@ -116,12 +110,13 @@ router.post('/send-whatsapp-message', auth_1.checkPremiumAccess, async (req, res
                 action_type: 'notification_sent',
                 entity_type: 'Customer',
                 entity_id: customerId || null,
-                description: `SMS sent to ${to}`,
+                description: `WhatsApp sent to ${to}`,
                 metadata: { phone_number: to, message_sid: result.messageSid, customer_id: customerId },
                 created_by: user.id,
             },
         });
-        res.json({ ...result, to, whatsapp_sent_count: smsSent + 1, whatsapp_limit: smsLimit });
+        const updated = await prisma_1.prisma.user.findUnique({ where: { id: user.id }, select: { whatsapp_sent_count: true, whatsapp_limit: true } });
+        res.json({ ...result, to, whatsapp_sent_count: updated?.whatsapp_sent_count || 0, whatsapp_limit: Math.max(updated?.whatsapp_limit || 400, 400) });
     }
     catch (error) {
         res.status(500).json({ error: error.message });
@@ -143,9 +138,11 @@ router.post('/send-payment-reminder', auth_1.checkPremiumAccess, async (req, res
             return res.status(400).json({ error: 'Customer has no phone number' });
         const currency = user.currency || 'AED';
         const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\nAmount Due: ${currency} ${customer.payment_amount}\n${customer.due_date ? `Due Date: ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
-        await (0, sms_1.sendSMS)({
+        await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
             to: customer.phone_number,
             message,
+            templateName: 'PAYMENT_REMINDER',
+            contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': currency, 'amount': String(customer.payment_amount || 0) },
         });
         await (0, email_1.sendEmail)({
             to: user.email,
@@ -180,9 +177,11 @@ router.post('/send-bulk-payment-reminders', auth_1.checkPremiumAccess, async (re
             try {
                 const bulkCurrency = user.currency || 'AED';
                 const message = `Payment Reminder\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in ${customer.days_remaining} days.\n\nAmount Due: ${bulkCurrency} ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you!`;
-                await (0, sms_1.sendSMS)({
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message,
+                    templateName: 'PAYMENT_REMINDER',
+                    contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': bulkCurrency, 'amount': String(customer.payment_amount || 0) },
                 });
                 sentCount++;
             }
@@ -809,19 +808,15 @@ router.post('/send-customer-payment-reminder', auth_1.checkPremiumAccess, async 
             return res.status(400).json({ error: 'No phone number' });
         const cCurrency = user.currency || 'AED';
         const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment of ${cCurrency} ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
-        const smsLimit = Math.max(user.whatsapp_limit || 200, 200);
-        const smsSent = user.whatsapp_sent_count || 0;
-        if (smsSent >= smsLimit) {
-            return res.status(403).json({ error: `Message limit reached (${smsLimit}). Please reset your cycle or upgrade.` });
-        }
-        await (0, sms_1.sendSMS)({
+        const result = await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
             to: customer.phone_number,
             message,
+            templateName: 'PAYMENT_REMINDER',
+            contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': cCurrency, 'amount': String(customer.payment_amount || 0) },
         });
-        await prisma_1.prisma.user.update({
-            where: { id: user.id },
-            data: { whatsapp_sent_count: smsSent + 1 },
-        });
+        if (!result.success && result.reason === 'Message limit reached') {
+            return res.status(403).json({ error: 'Message limit reached (400). Limit resets on next billing cycle.' });
+        }
         res.json({ success: true, message: 'Reminder sent' });
     }
     catch (error) {
@@ -1081,7 +1076,7 @@ router.post('/generate-customer-payment-link', async (req, res) => {
         // Send payment link via WhatsApp if customer has phone
         if (customer.phone_number) {
             try {
-                await (0, sms_1.sendSMS)({
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message: `Hello ${customer.full_name}!\n\nHere is your payment link for ${(user.currency || 'AED').toUpperCase()} ${amount}:\n${session.url}\n\nThank you!`,
                 });
@@ -1303,9 +1298,11 @@ async function runAutoPaymentReminders() {
                     },
                 });
                 const endDateFormatted = customer.end_date ? (0, date_fns_1.format)(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
-                await (0, sms_1.sendSMS)({
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message: `Payment Reminder\n\nHello ${customer.full_name},\n\nYour tiffin subscription ends on ${endDateFormatted}.\n\nAmount: ${currency.toUpperCase()} ${amount}\n\nPay securely here: ${session.url}\n\nThank you!`,
+                    templateName: 'PAYMENT_REMINDER_LINK',
+                    contentVariables: { 'name': customer.full_name || 'Customer', 'end date': endDateFormatted, 'currency': currency.toUpperCase(), 'amount': String(amount), 'payment URL': session.url },
                 });
                 await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
                 beforeCount++;
@@ -1369,9 +1366,11 @@ async function runAutoPaymentReminders() {
                     },
                 });
                 const endDateFormatted = customer.end_date ? (0, date_fns_1.format)(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
-                await (0, sms_1.sendSMS)({
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message: `Payment Overdue\n\nHello ${customer.full_name},\n\nYour subscription expired on ${endDateFormatted} and payment is overdue.\n\nAmount Due: ${currency.toUpperCase()} ${amount}\n\nPay now to continue: ${session.url}\n\nThank you!`,
+                    templateName: 'PAYMENT_OVERDUE',
+                    contentVariables: { 'name': customer.full_name || 'Customer', 'expiry date': endDateFormatted, 'currency': currency.toUpperCase(), 'amount': String(amount), 'payment URL': session.url },
                 });
                 await prisma_1.prisma.customer.update({
                     where: { id: customer.id },
@@ -1459,7 +1458,7 @@ async function runTrialExpiryCheck() {
                 }
             }
             const trialCurrency = (user.currency || 'AED').toUpperCase();
-            await (0, sms_1.sendSMS)({
+            await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                 to: customer.phone_number,
                 message: `Hello ${customer.full_name},\n\nYour free trial has ended! We hope you enjoyed our tiffin service.\n\nTo continue without interruption, please subscribe.\n\nAmount: ${trialCurrency} ${customer.payment_amount}/month${paymentLink}\n\nThank you!`,
             });
@@ -1523,8 +1522,6 @@ router.post('/send-meal-rating-request', auth_1.checkPremiumAccess, async (req, 
         if (!customerIds || !Array.isArray(customerIds) || customerIds.length === 0) {
             return res.status(400).json({ error: 'customerIds array required' });
         }
-        const smsLimit = Math.max(user.whatsapp_limit || 200, 200);
-        let smsSent = user.whatsapp_sent_count || 0;
         const customers = await prisma_1.prisma.customer.findMany({
             where: { id: { in: customerIds }, created_by: user.id, is_deleted: false, active: true, phone_number: { not: null } },
         });
@@ -1533,10 +1530,6 @@ router.post('/send-meal-rating-request', auth_1.checkPremiumAccess, async (req, 
         for (const customer of customers) {
             if (!customer.phone_number)
                 continue;
-            if (smsSent >= smsLimit) {
-                errors.push(`Message limit reached after ${sentCount} sends`);
-                break;
-            }
             try {
                 await prisma_1.prisma.mealRating.create({
                     data: {
@@ -1548,21 +1541,21 @@ router.post('/send-meal-rating-request', auth_1.checkPremiumAccess, async (req, 
                         created_by: user.id,
                     },
                 });
-                await (0, sms_1.sendSMS)({
+                const result = await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
                 });
-                smsSent++;
-                sentCount++;
+                if (!result.success && result.reason === 'Message limit reached') {
+                    errors.push(`Message limit reached after ${sentCount} sends`);
+                    break;
+                }
+                if (result.success)
+                    sentCount++;
             }
             catch (err) {
                 errors.push(`Failed for ${customer.full_name}: ${err.message}`);
             }
         }
-        await prisma_1.prisma.user.update({
-            where: { id: user.id },
-            data: { whatsapp_sent_count: smsSent },
-        });
         res.json({ success: true, sent: sentCount, errors });
     }
     catch (error) {
@@ -1602,7 +1595,7 @@ async function runMealRatingRequests() {
                     created_by: customer.created_by,
                 },
             });
-            await (0, sms_1.sendSMS)({
+            await (0, whatsapp_1.sendMerchantWhatsApp)(customer.created_by, {
                 to: customer.phone_number,
                 message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
             });
@@ -1788,7 +1781,7 @@ router.post('/approve-customer', async (req, res) => {
                 const paymentMsg = checkoutUrl
                     ? `\n\nPay for your subscription here:\n${checkoutUrl}`
                     : '';
-                await (0, sms_1.sendSMS)({
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message: `Hello ${customer.full_name}! Your registration with ${user.business_name || 'our tiffin service'} has been approved. ${customer.is_trial ? 'Your 3-day free trial starts today!' : 'Welcome aboard!'}${paymentMsg}\n\nThank you!`,
                 });
@@ -1821,7 +1814,7 @@ router.post('/reject-customer', async (req, res) => {
         });
         if (customer.phone_number) {
             try {
-                await (0, sms_1.sendSMS)({
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
                     message: `Hello ${customer.full_name}, unfortunately your registration could not be approved at this time.${reason ? ` Reason: ${reason}` : ''}\n\nPlease contact us for more information.`,
                 });

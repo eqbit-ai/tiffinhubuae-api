@@ -1,1 +1,1 @@
-{"version":3,"file":"whatsappTemplates.d.ts","sourceRoot":"","sources":["../../src/services/whatsappTemplates.ts"],"names":[],"mappings":"AAKA,eAAO,MAAM,SAAS;;;;;;;;;;;CAkDrB,CAAC;AAGF,wBAAgB,WAAW,CAAC,YAAY,EAAE,MAAM,OAAO,SAAS,GAAG,OAAO,CAEzE"}
+{"version":3,"file":"whatsappTemplates.d.ts","sourceRoot":"","sources":["../../src/services/whatsappTemplates.ts"],"names":[],"mappings":"AAQA,eAAO,MAAM,SAAS;;;;;;;;;;;CA0CrB,CAAC;AAGF,wBAAgB,WAAW,CAAC,YAAY,EAAE,MAAM,OAAO,SAAS,GAAG,OAAO,CAEzE"}

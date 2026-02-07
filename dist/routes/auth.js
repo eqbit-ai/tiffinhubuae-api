@@ -287,6 +287,23 @@ router.post('/reset-password', async (req, res) => {
                 reset_token_expires: null,
             },
         });
+        // Send confirmation email
+        (0, email_1.sendEmail)({
+            to: user.email,
+            subject: 'Your TiffinHub password has been reset',
+            body: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 24px; border-radius: 12px 12px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">Password Reset Successful</h1>
+          </div>
+          <div style="background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="font-size: 15px; color: #334155;">Hi ${user.full_name || 'there'},</p>
+            <p style="font-size: 15px; color: #475569;">Your password has been successfully reset. You can now log in with your new password.</p>
+            <p style="font-size: 13px; color: #94a3b8; margin-top: 20px;">If you did not make this change, please contact support immediately.</p>
+          </div>
+        </div>
+      `,
+        }).catch(err => console.error('[Email] Reset confirmation failed:', err));
         res.json({ message: 'Password has been reset successfully' });
     }
     catch (error) {

@@ -5,7 +5,7 @@ const prisma_1 = require("../lib/prisma");
 const date_fns_1 = require("date-fns");
 const email_1 = require("../services/email");
 const stripe_1 = require("../services/stripe");
-const sms_1 = require("../services/sms");
+const whatsapp_1 = require("../services/whatsapp");
 const auth_1 = require("../middleware/auth");
 const router = (0, express_1.Router)();
 // ─────────────────────────────────────────────────────────────────
@@ -73,10 +73,12 @@ router.post('/auth/request-otp', async (req, res) => {
                 expires_at: expiresAt,
             },
         });
-        // Send OTP via SMS
-        const smsResult = await (0, sms_1.sendSMS)({
+        // Send OTP via WhatsApp (counts toward merchant's 400 limit)
+        const smsResult = await (0, whatsapp_1.sendMerchantWhatsApp)(merchant_id, {
             to: customerPhone,
             message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
+            templateName: 'OTP_LOGIN',
+            contentVariables: { '1': otpCode },
         });
         if (!smsResult || !smsResult.success) {
             console.error('[Portal OTP] SMS not sent:', smsResult?.reason || 'unknown');
@@ -240,6 +242,26 @@ router.put('/me', auth_1.customerAuthMiddleware, async (req, res) => {
             where: { id: customer.id },
             data: updateData,
         });
+        // Notify merchant about profile changes
+        const merchant = await prisma_1.prisma.user.findUnique({ where: { id: customer.created_by } });
+        if (merchant) {
+            const changedFields = Object.keys(updateData).map(f => `<li><strong>${f.replace(/_/g, ' ')}:</strong> ${updateData[f]}</li>`).join('');
+            (0, email_1.sendEmail)({
+                to: merchant.email,
+                subject: `Customer Profile Updated - ${customer.full_name}`,
+                body: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 24px; border-radius: 12px 12px 0 0; text-align: center;">
+              <h1 style="color: white; margin: 0; font-size: 24px;">Customer Profile Updated</h1>
+            </div>
+            <div style="background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+              <p style="font-size: 15px; color: #334155;"><strong>${customer.full_name}</strong> updated their profile via the customer portal:</p>
+              <ul style="font-size: 14px; color: #475569; line-height: 1.8;">${changedFields}</ul>
+            </div>
+          </div>
+        `,
+            }).catch(err => console.error('[Email] Profile update notification failed:', err));
+        }
         res.json({ success: true, customer: updated });
     }
     catch (error) {
@@ -316,7 +338,7 @@ router.post('/renew', auth_1.customerAuthMiddleware, async (req, res) => {
             },
             success_url: `${appUrl}/portal/payment-success?type=renewal`,
             cancel_url: `${appUrl}/portal/dashboard?cancelled=true`,
-        }, { stripeAccount: merchant.stripe_connect_account_id });
+        }, { stripeAccount: merchant.stripe_connect_account_id ?? undefined });
         // Create payment link record
         await prisma_1.prisma.paymentLink.create({
             data: {
@@ -439,9 +461,10 @@ router.get('/menu', auth_1.customerAuthMiddleware, async (req, res) => {
     try {
         const customer = req.customer;
         const menuItems = await prisma_1.prisma.menuItem.findMany({
-            where: { created_by: customer.merchant_id, is_active: true },
+            where: { created_by: customer.merchant_id, is_active: true, price: { gt: 0 } },
             orderBy: [{ category: 'asc' }, { name: 'asc' }],
         });
+        const merchant = await prisma_1.prisma.user.findUnique({ where: { id: customer.merchant_id } });
         res.json({
             menu: menuItems.map((m) => ({
                 id: m.id,
@@ -452,6 +475,7 @@ router.get('/menu', auth_1.customerAuthMiddleware, async (req, res) => {
                 meal_type: m.meal_type,
                 image_url: m.image_url,
             })),
+            stripe_connected: !!(merchant?.stripe_connect_account_id && merchant?.payment_account_connected && merchant?.payment_verification_status === 'verified'),
         });
     }
     catch (error) {
@@ -490,7 +514,7 @@ router.get('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
 router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
     try {
         const customer = req.customer;
-        const { items, delivery_date, delivery_time, special_notes } = req.body;
+        const { items, delivery_date, delivery_time, special_notes, payment_method } = req.body;
         if (!items || !Array.isArray(items) || items.length === 0) {
             return res.status(400).json({ error: 'Items are required' });
         }
@@ -498,8 +522,11 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
         if (!merchant) {
             return res.status(404).json({ error: 'Merchant not found' });
         }
-        if (!merchant.stripe_connect_account_id || !merchant.payment_account_connected || merchant.payment_verification_status !== 'verified') {
-            return res.status(400).json({ error: 'Online payments are not available. Please contact your provider.' });
+        const isCash = payment_method === 'cash';
+        if (!isCash) {
+            if (!merchant.stripe_connect_account_id || !merchant.payment_account_connected || merchant.payment_verification_status !== 'verified') {
+                return res.status(400).json({ error: 'Online payments are not available. Please contact your provider.' });
+            }
         }
         // Validate and calculate items
         const menuItemIds = items.map((i) => i.menu_item_id);
@@ -528,10 +555,73 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Order total must be greater than 0' });
         }
         const currency = (merchant.currency || 'aed').toLowerCase();
+        // Cash payment — no Stripe, no platform fee
+        if (isCash) {
+            const order = await prisma_1.prisma.oneTimeOrder.create({
+                data: {
+                    customer_id: customer.id,
+                    customer_name: customer.full_name,
+                    items: orderItems,
+                    total_amount: totalAmount,
+                    currency: currency.toUpperCase(),
+                    delivery_date,
+                    delivery_time,
+                    special_notes,
+                    status: 'confirmed',
+                    payment_status: 'cash',
+                    platform_fee: 0,
+                    net_amount: totalAmount,
+                    created_by: customer.merchant_id,
+                },
+            });
+            // Notify merchant
+            await prisma_1.prisma.notification.create({
+                data: {
+                    user_email: merchant.email,
+                    title: 'New Cash Order',
+                    message: `${customer.full_name} placed a cash order for ${currency.toUpperCase()} ${totalAmount.toFixed(2)}`,
+                    type: 'order',
+                    notification_type: 'info',
+                    customer_id: customer.id,
+                    customer_name: customer.full_name,
+                },
+            });
+            // Email merchant about new extra order
+            const itemsList = orderItems.map((it) => `${it.name} x${it.quantity} — ${currency.toUpperCase()} ${(it.price * it.quantity).toFixed(2)}`).join('<br/>');
+            (0, email_1.sendEmail)({
+                to: merchant.email,
+                subject: `New Extra Order - ${customer.full_name} (Cash)`,
+                body: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 24px; border-radius: 12px 12px 0 0; text-align: center;">
+              <h1 style="color: white; margin: 0; font-size: 24px;">New Extra Order</h1>
+            </div>
+            <div style="background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+              <p style="font-size: 15px; color: #334155;"><strong>${customer.full_name}</strong> placed a cash order:</p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                <p style="font-size: 14px; color: #475569; line-height: 1.8; margin: 0;">${itemsList}</p>
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 12px 0;" />
+                <p style="font-size: 16px; font-weight: bold; color: #334155; margin: 0;">Total: ${currency.toUpperCase()} ${totalAmount.toFixed(2)}</p>
+              </div>
+              <p style="font-size: 14px; color: #475569;"><strong>Payment:</strong> Cash</p>
+              ${delivery_date ? `<p style="font-size: 14px; color: #475569;"><strong>Delivery:</strong> ${delivery_date}${delivery_time ? ' at ' + delivery_time : ''}</p>` : ''}
+              ${special_notes ? `<p style="font-size: 14px; color: #475569;"><strong>Notes:</strong> ${special_notes}</p>` : ''}
+            </div>
+          </div>
+        `,
+            }).catch(err => console.error('[Email] Extra order notification failed:', err));
+            return res.json({
+                success: true,
+                order_id: order.id,
+                cash: true,
+                total_amount: totalAmount,
+                currency: currency.toUpperCase(),
+            });
+        }
+        // Card payment — Stripe checkout
         const feePercentage = merchant.fee_percentage || 3.5;
         const platformFeeAmount = Math.round((totalAmount * feePercentage) / 100);
         const netAmount = totalAmount - platformFeeAmount;
-        // Create the order first (pending status)
         const order = await prisma_1.prisma.oneTimeOrder.create({
             data: {
                 customer_id: customer.id,
@@ -550,7 +640,6 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
             },
         });
         const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
-        // Create Stripe checkout session
         const session = await stripe_1.stripe.checkout.sessions.create({
             mode: 'payment',
             payment_method_types: ['card'],
@@ -579,8 +668,7 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
             },
             success_url: `${appUrl}/portal/payment-success?type=order&order_id=${order.id}`,
             cancel_url: `${appUrl}/portal/orders?cancelled=true`,
-        }, { stripeAccount: merchant.stripe_connect_account_id });
-        // Update order with stripe session id
+        }, { stripeAccount: merchant.stripe_connect_account_id ?? undefined });
         await prisma_1.prisma.oneTimeOrder.update({
             where: { id: order.id },
             data: { stripe_session_id: session.id },
@@ -764,7 +852,7 @@ router.post('/join/:merchantId', async (req, res) => {
                     },
                     success_url: `${appUrl}/registration-success?type=paid`,
                     cancel_url: `${appUrl}/join/${merchant.id}?cancelled=true`,
-                }, { stripeAccount: merchant.stripe_connect_account_id });
+                }, { stripeAccount: merchant.stripe_connect_account_id ?? undefined });
                 return res.json({ success: true, checkoutUrl: session.url, customerId: customer.id });
             }
         }

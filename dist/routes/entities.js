@@ -121,6 +121,7 @@ const entityConfig = {
     kitchens: { model: () => prisma_1.prisma.kitchen, ownerField: 'created_by', ownerValue: 'id' },
     prep_items: { model: () => prisma_1.prisma.prepItem, ownerField: 'created_by', ownerValue: 'id' },
     chat_messages: { model: () => prisma_1.prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
+    one_time_orders: { model: () => prisma_1.prisma.oneTimeOrder, ownerField: 'created_by', ownerValue: 'id' },
 };
 // Helper to build where clause with tenant isolation
 function buildWhere(config, user, filters = {}) {
