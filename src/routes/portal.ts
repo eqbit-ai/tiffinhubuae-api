@@ -17,6 +17,11 @@ function generateOTP(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// Normalize phone number: strip spaces/dashes, ensure we can match with or without '+'
+function normalizePhone(phone: string): string {
+  return phone.replace(/[\s\-()]/g, '').trim();
+}
+
 // POST /api/portal/auth/request-otp - Request OTP for login
 router.post('/auth/request-otp', async (req: Request, res: Response) => {
   try {
@@ -29,14 +34,18 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
     // Verify merchant exists
     const merchant = await prisma.user.findUnique({ where: { id: merchant_id } });
     if (!merchant) {
-      // Return success anyway to prevent merchant enumeration
       return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
     }
 
-    // Find customer by phone number for this merchant
+    // Normalize and try multiple phone formats to handle +/- prefix mismatches
+    const cleaned = normalizePhone(phone_number);
+    const withPlus = cleaned.startsWith('+') ? cleaned : '+' + cleaned;
+    const withoutPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
+
+    // Find customer by phone number for this merchant (try both formats)
     const customer = await prisma.customer.findFirst({
       where: {
-        phone_number: phone_number,
+        phone_number: { in: [cleaned, withPlus, withoutPlus] },
         created_by: merchant_id,
         is_deleted: false,
       },
@@ -47,11 +56,14 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
     }
 
+    // Use the customer's stored phone number for consistency
+    const customerPhone = customer.phone_number!;
+
     // Rate limiting: Max 5 OTPs per phone per hour
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const recentOTPs = await prisma.customerOTP.count({
       where: {
-        phone_number,
+        customer_id: customer.id,
         merchant_id,
         created_at: { gte: oneHourAgo },
       },
@@ -67,7 +79,7 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
 
     await prisma.customerOTP.create({
       data: {
-        phone_number,
+        phone_number: customerPhone,
         otp_code: otpCode,
         merchant_id,
         customer_id: customer.id,
@@ -77,7 +89,7 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
 
     // Send OTP via SMS
     const smsResult = await sendSMS({
-      to: phone_number,
+      to: customerPhone,
       message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
     });
 
@@ -101,10 +113,28 @@ router.post('/auth/verify-otp', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Phone number, merchant ID, and OTP are required' });
     }
 
-    // Find the most recent OTP for this phone/merchant
+    // Normalize phone to find customer first
+    const cleaned = normalizePhone(phone_number);
+    const withPlus = cleaned.startsWith('+') ? cleaned : '+' + cleaned;
+    const withoutPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
+
+    // Find the customer to get their ID
+    const customer = await prisma.customer.findFirst({
+      where: {
+        phone_number: { in: [cleaned, withPlus, withoutPlus] },
+        created_by: merchant_id,
+        is_deleted: false,
+      },
+    });
+
+    if (!customer) {
+      return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
+    }
+
+    // Find the most recent OTP for this customer/merchant
     const otpRecord = await prisma.customerOTP.findFirst({
       where: {
-        phone_number,
+        customer_id: customer.id,
         merchant_id,
         verified: false,
         expires_at: { gt: new Date() },
@@ -135,19 +165,6 @@ router.post('/auth/verify-otp', async (req: Request, res: Response) => {
       where: { id: otpRecord.id },
       data: { verified: true },
     });
-
-    // Find customer
-    const customer = await prisma.customer.findFirst({
-      where: {
-        phone_number,
-        created_by: merchant_id,
-        is_deleted: false,
-      },
-    });
-
-    if (!customer) {
-      return res.status(404).json({ error: 'Customer not found' });
-    }
 
     // Update last login
     await prisma.customer.update({
