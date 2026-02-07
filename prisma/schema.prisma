@@ -172,6 +172,7 @@ model MenuItem {
   week_number Int?
   is_active   Boolean  @default(true)
   day_of_week String?
+  diet_type   String?  @default("Veg")
   created_by  String
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
