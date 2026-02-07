@@ -107,17 +107,17 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
       return res.status(400).json({ error: 'Missing required fields: to (or customerId with phone number)' });
     }
 
-    const whatsappLimit = Math.max(user.whatsapp_limit || 400, 400);
-    const whatsappSent = user.whatsapp_sent_count || 0;
-    if (whatsappSent >= whatsappLimit) {
-      return res.status(403).json({ error: `WhatsApp message limit reached (${whatsappLimit}). Please reset your cycle or upgrade.` });
+    const smsLimit = Math.max(user.whatsapp_limit || 200, 200);
+    const smsSent = user.whatsapp_sent_count || 0;
+    if (smsSent >= smsLimit) {
+      return res.status(403).json({ error: `Message limit reached (${smsLimit}). Please reset your cycle or upgrade.` });
     }
 
     const result = await sendSMS({ to, message });
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { whatsapp_sent_count: whatsappSent + 1 },
+      data: { whatsapp_sent_count: smsSent + 1 },
     });
 
     await prisma.activityLog.create({
@@ -127,13 +127,13 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
         action_type: 'notification_sent',
         entity_type: 'Customer',
         entity_id: customerId || null,
-        description: `WhatsApp message sent to ${to}`,
+        description: `SMS sent to ${to}`,
         metadata: { phone_number: to, message_sid: result.messageSid, customer_id: customerId },
         created_by: user.id,
       },
     });
 
-    res.json({ ...result, to, whatsapp_sent_count: whatsappSent + 1, whatsapp_limit: whatsappLimit });
+    res.json({ ...result, to, whatsapp_sent_count: smsSent + 1, whatsapp_limit: smsLimit });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
