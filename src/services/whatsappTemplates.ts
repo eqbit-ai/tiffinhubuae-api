@@ -14,7 +14,7 @@ export const TEMPLATES = {
 
   // 2. Payment Reminder (manual + bulk)
   // Body: "Hello {{customer name}}, your payment of {{currency }} {{amount}} is due..."
-  // Variables: "customer name", "currency " (trailing space!), "amount"
+  // Variables: "customer name", "currency", "amount"
   PAYMENT_REMINDER: process.env.TWILIO_TPL_PAYMENT_REMINDER || '',
 
   // 3. Payment Reminder with Link (auto-generated Stripe checkout)

@@ -155,7 +155,7 @@ router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthReques
       to: customer.phone_number,
       message,
       templateName: 'PAYMENT_REMINDER',
-      contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': currency, 'amount': String(customer.payment_amount || 0) },
+      contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency':currency, 'amount': String(customer.payment_amount || 0) },
     });
     await sendEmail({
       to: user.email,
@@ -200,7 +200,7 @@ router.post('/send-bulk-payment-reminders', checkPremiumAccess, async (req: Auth
           to: customer.phone_number,
           message,
           templateName: 'PAYMENT_REMINDER',
-          contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': bulkCurrency, 'amount': String(customer.payment_amount || 0) },
+          contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency':bulkCurrency, 'amount': String(customer.payment_amount || 0) },
         });
         sentCount++;
       } catch (error: any) {
@@ -889,7 +889,7 @@ router.post('/send-customer-payment-reminder', checkPremiumAccess, async (req: A
       to: customer.phone_number,
       message,
       templateName: 'PAYMENT_REMINDER',
-      contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': cCurrency, 'amount': String(customer.payment_amount || 0) },
+      contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency':cCurrency, 'amount': String(customer.payment_amount || 0) },
     });
 
     if (!result.success && result.reason === 'Message limit reached') {

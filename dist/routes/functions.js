@@ -142,7 +142,7 @@ router.post('/send-payment-reminder', auth_1.checkPremiumAccess, async (req, res
             to: customer.phone_number,
             message,
             templateName: 'PAYMENT_REMINDER',
-            contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': currency, 'amount': String(customer.payment_amount || 0) },
+            contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(customer.payment_amount || 0) },
         });
         await (0, email_1.sendEmail)({
             to: user.email,
@@ -181,7 +181,7 @@ router.post('/send-bulk-payment-reminders', auth_1.checkPremiumAccess, async (re
                     to: customer.phone_number,
                     message,
                     templateName: 'PAYMENT_REMINDER',
-                    contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': bulkCurrency, 'amount': String(customer.payment_amount || 0) },
+                    contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency': bulkCurrency, 'amount': String(customer.payment_amount || 0) },
                 });
                 sentCount++;
             }
@@ -812,7 +812,7 @@ router.post('/send-customer-payment-reminder', auth_1.checkPremiumAccess, async 
             to: customer.phone_number,
             message,
             templateName: 'PAYMENT_REMINDER',
-            contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': cCurrency, 'amount': String(customer.payment_amount || 0) },
+            contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency': cCurrency, 'amount': String(customer.payment_amount || 0) },
         });
         if (!result.success && result.reason === 'Message limit reached') {
             return res.status(403).json({ error: 'Message limit reached (400). Limit resets on next billing cycle.' });
