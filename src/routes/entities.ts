@@ -131,6 +131,7 @@ const entityConfig: Record<string, {
   kitchens: { model: () => prisma.kitchen, ownerField: 'created_by', ownerValue: 'id' },
   prep_items: { model: () => prisma.prepItem, ownerField: 'created_by', ownerValue: 'id' },
   chat_messages: { model: () => prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
+  one_time_orders: { model: () => prisma.oneTimeOrder, ownerField: 'created_by', ownerValue: 'id' },
 };
 
 // Helper to build where clause with tenant isolation
