@@ -37,17 +37,36 @@ export async function sendWhatsAppMessage(params: WhatsAppParams) {
     if (templateSid) {
       messageParams.contentSid = templateSid;
       if (params.contentVariables) {
-        messageParams.contentVariables = JSON.stringify(params.contentVariables);
+        // Ensure all values are non-null strings (Twilio rejects null/undefined)
+        const safeVars: Record<string, string> = {};
+        for (const [k, v] of Object.entries(params.contentVariables)) {
+          safeVars[k] = v ?? '';
+        }
+        messageParams.contentVariables = JSON.stringify(safeVars);
       }
       console.log(`[WhatsApp] Using template ${params.templateName} (${templateSid})`);
     } else {
       messageParams.body = params.message;
     }
 
-    const result = await client.messages.create(messageParams);
-
-    console.log(`[WhatsApp] Message sent to ${formattedTo} — SID: ${result.sid}, status: ${result.status}`);
-    return { success: true, messageSid: result.sid, status: result.status };
+    try {
+      const result = await client.messages.create(messageParams);
+      console.log(`[WhatsApp] Message sent to ${formattedTo} — SID: ${result.sid}, status: ${result.status}`);
+      return { success: true, messageSid: result.sid, status: result.status };
+    } catch (templateErr: any) {
+      // If template send fails (e.g. 21656 invalid variables), fall back to plain body
+      if (templateSid && params.message) {
+        console.warn(`[WhatsApp] Template failed (${templateErr.code || templateErr.message}), falling back to body text`);
+        const fallbackResult = await client.messages.create({
+          from: formattedFrom,
+          to: formattedTo,
+          body: params.message,
+        });
+        console.log(`[WhatsApp] Fallback sent to ${formattedTo} — SID: ${fallbackResult.sid}`);
+        return { success: true, messageSid: fallbackResult.sid, status: fallbackResult.status };
+      }
+      throw templateErr;
+    }
   } catch (error: any) {
     console.error(`[WhatsApp] Failed to send to ${formattedTo}:`, error.message);
     throw error;
