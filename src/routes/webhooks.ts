@@ -131,7 +131,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   to: customer.phone_number,
                   message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n\nThank you!`,
                   templateName: 'ORDER_CONFIRMED',
-                  contentVariables: { '1': customer.full_name, '2': order.currency || 'AED', '3': String(order.total_amount) },
+                  contentVariables: { 'name': customer.full_name || 'Customer', 'currency': order.currency || 'AED', 'amount': String(order.total_amount) },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -187,7 +187,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   to: customer.phone_number,
                   message: `Renewal Successful\n\nHello ${customer.full_name},\n\nYour subscription has been renewed!\n\nAmount: ${currency} ${amount}\nValid until: ${endFormatted}\n\nThank you for continuing with us!`,
                   templateName: 'PAYMENT_RECEIVED',
-                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
+                  contentVariables: { 'name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(amount), 'end date': endFormatted },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -268,7 +268,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   to: customer.phone_number,
                   message: `Payment Received!\n\nHello ${customer.full_name},\n\nYour payment of ${currency} ${amount} has been received. Your trial has been converted to a full subscription!\n\nActive until: ${endFormatted}\n\nThank you!`,
                   templateName: 'PAYMENT_RECEIVED',
-                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
+                  contentVariables: { 'name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(amount), 'end date': endFormatted },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -345,7 +345,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   to: customer.phone_number,
                   message: `Payment Received\n\nHello ${customer.full_name},\n\nPayment of ${currency} ${amount} received!\n\nYour subscription is now active until ${endFormatted}.\n\nThank you!`,
                   templateName: 'PAYMENT_RECEIVED',
-                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
+                  contentVariables: { 'name': customer.full_name || 'Customer', 'currency': currency, 'amount': String(amount), 'end date': endFormatted },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }

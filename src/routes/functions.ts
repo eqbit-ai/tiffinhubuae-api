@@ -155,7 +155,7 @@ router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthReques
       to: customer.phone_number,
       message,
       templateName: 'PAYMENT_REMINDER',
-      contentVariables: { '1': customer.full_name, '2': currency, '3': String(customer.payment_amount) },
+      contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': currency, 'amount': String(customer.payment_amount || 0) },
     });
     await sendEmail({
       to: user.email,
@@ -200,7 +200,7 @@ router.post('/send-bulk-payment-reminders', checkPremiumAccess, async (req: Auth
           to: customer.phone_number,
           message,
           templateName: 'PAYMENT_REMINDER',
-          contentVariables: { '1': customer.full_name, '2': bulkCurrency, '3': String(customer.payment_amount) },
+          contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': bulkCurrency, 'amount': String(customer.payment_amount || 0) },
         });
         sentCount++;
       } catch (error: any) {
@@ -889,7 +889,7 @@ router.post('/send-customer-payment-reminder', checkPremiumAccess, async (req: A
       to: customer.phone_number,
       message,
       templateName: 'PAYMENT_REMINDER',
-      contentVariables: { '1': customer.full_name, '2': cCurrency, '3': String(customer.payment_amount) },
+      contentVariables: { 'customer name': customer.full_name || 'Customer', 'currency ': cCurrency, 'amount': String(customer.payment_amount || 0) },
     });
 
     if (!result.success && result.reason === 'Message limit reached') {
@@ -1421,7 +1421,7 @@ export async function runAutoPaymentReminders() {
           to: customer.phone_number,
           message: `Payment Reminder\n\nHello ${customer.full_name},\n\nYour tiffin subscription ends on ${endDateFormatted}.\n\nAmount: ${currency.toUpperCase()} ${amount}\n\nPay securely here: ${session.url}\n\nThank you!`,
           templateName: 'PAYMENT_REMINDER_LINK',
-          contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url! },
+          contentVariables: { 'name': customer.full_name || 'Customer', 'end date': endDateFormatted, 'currency': currency.toUpperCase(), 'amount': String(amount), 'payment URL': session.url! },
         });
 
         await prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
@@ -1495,7 +1495,7 @@ export async function runAutoPaymentReminders() {
           to: customer.phone_number,
           message: `Payment Overdue\n\nHello ${customer.full_name},\n\nYour subscription expired on ${endDateFormatted} and payment is overdue.\n\nAmount Due: ${currency.toUpperCase()} ${amount}\n\nPay now to continue: ${session.url}\n\nThank you!`,
           templateName: 'PAYMENT_OVERDUE',
-          contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url! },
+          contentVariables: { 'name': customer.full_name || 'Customer', 'expiry date': endDateFormatted, 'currency': currency.toUpperCase(), 'amount': String(amount), 'payment URL': session.url! },
         });
 
         await prisma.customer.update({

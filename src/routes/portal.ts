@@ -93,7 +93,7 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       to: customerPhone,
       message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
       templateName: 'OTP_LOGIN',
-      contentVariables: { '1': 'TiffinHub', '2': otpCode },
+      contentVariables: { '1': otpCode },
     });
 
     if (!smsResult || !smsResult.success) {
