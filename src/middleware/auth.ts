@@ -25,12 +25,26 @@ export interface CustomerAuthRequest extends Request {
   };
 }
 
+export interface DriverAuthRequest extends Request {
+  driver?: {
+    id: string;
+    name: string;
+    phone: string | null;
+    merchant_id: string;
+    [key: string]: any;
+  };
+}
+
 export function generateToken(userId: string): string {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
 }
 
 export function generateCustomerToken(customerId: string, merchantId: string): string {
   return jwt.sign({ customerId, merchantId, type: 'customer' }, JWT_SECRET, { expiresIn: '30d' });
+}
+
+export function generateDriverToken(driverId: string, merchantId: string): string {
+  return jwt.sign({ driverId, merchantId, type: 'driver' }, JWT_SECRET, { expiresIn: '12h' });
 }
 
 export async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
@@ -107,6 +121,42 @@ export async function customerAuthMiddleware(req: CustomerAuthRequest, res: Resp
 
     req.customer = {
       ...customer,
+      merchant_id: decoded.merchantId,
+    } as any;
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+export async function driverAuthMiddleware(req: DriverAuthRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const token = authHeader.slice(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { driverId: string; merchantId: string; type: string };
+
+    if (decoded.type !== 'driver') {
+      return res.status(401).json({ error: 'Invalid token type' });
+    }
+
+    const driver = await prisma.driver.findFirst({
+      where: {
+        id: decoded.driverId,
+        created_by: decoded.merchantId,
+        is_active: true,
+      },
+    });
+
+    if (!driver) {
+      return res.status(401).json({ error: 'Driver not found' });
+    }
+
+    req.driver = {
+      ...driver,
       merchant_id: decoded.merchantId,
     } as any;
     next();

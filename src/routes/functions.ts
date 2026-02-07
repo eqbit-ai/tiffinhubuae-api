@@ -1156,7 +1156,7 @@ router.post('/create-stripe-connect-account', async (req: AuthRequest, res) => {
       type: 'account_onboarding',
     });
 
-    res.json({ success: true, url: accountLink.url, accountId });
+    res.json({ success: true, onboardingUrl: accountLink.url, url: accountLink.url, accountId });
   } catch (error: any) {
     console.error('[StripeConnect] Error:', error.message);
     res.status(500).json({ error: error.message });
@@ -1174,22 +1174,38 @@ router.post('/get-stripe-account-status', async (req: AuthRequest, res) => {
     console.log('[StripeStatus] Checking account:', user.stripe_connect_account_id);
     const account = await stripe.accounts.retrieve(user.stripe_connect_account_id);
     const isVerified = account.charges_enabled && account.payouts_enabled;
-    console.log('[StripeStatus] charges_enabled:', account.charges_enabled, 'payouts_enabled:', account.payouts_enabled);
+    const needsAction = !account.details_submitted || (account.requirements?.currently_due && account.requirements.currently_due.length > 0);
+    const status = isVerified ? 'verified' : needsAction ? 'action_required' : 'pending';
+    console.log('[StripeStatus] charges_enabled:', account.charges_enabled, 'payouts_enabled:', account.payouts_enabled, 'status:', status);
 
     await prisma.user.update({
       where: { id: user.id },
       data: {
         payment_account_connected: true,
-        payment_verification_status: isVerified ? 'verified' : 'pending',
+        payment_verification_status: status === 'verified' ? 'verified' : 'pending',
       },
     });
+
+    // Try to get bank account last 4 digits
+    let bankAccountLast4 = null;
+    try {
+      const bankAccounts = await stripe.accounts.listExternalAccounts(account.id, { object: 'bank_account', limit: 1 });
+      if (bankAccounts.data.length > 0) {
+        bankAccountLast4 = (bankAccounts.data[0] as any).last4;
+      }
+    } catch {}
 
     res.json({
       connected: true,
       verified: isVerified,
+      status,
       charges_enabled: account.charges_enabled,
       payouts_enabled: account.payouts_enabled,
+      accountId: account.id,
       account_id: account.id,
+      bankAccountLast4,
+      feePercentage: (user as any).fee_percentage || 3.5,
+      feeConsentDate: (user as any).fee_consent_accepted_at,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1522,6 +1538,41 @@ export async function runTrialExpiryCheck() {
           payment_status: 'Pending',
         },
       });
+
+      // Email the merchant about this trial expiry
+      if (user.email) {
+        const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+        await sendEmail({
+          to: user.email,
+          subject: `Trial Ended - ${customer.full_name} needs follow-up`,
+          body: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <div style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 24px; border-radius: 12px 12px 0 0; text-align: center;">
+                <h2 style="color: white; margin: 0;">Trial Period Ended</h2>
+              </div>
+              <div style="background: #ffffff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+                <p style="font-size: 15px; color: #334155;">
+                  <strong>${customer.full_name}</strong>'s 3-day free trial has ended and they have been deactivated.
+                </p>
+                <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                  <p style="margin: 0 0 8px; font-size: 14px; color: #92400e;"><strong>Customer Details:</strong></p>
+                  <p style="margin: 4px 0; font-size: 14px; color: #78350f;">Name: ${customer.full_name}</p>
+                  ${customer.phone_number ? `<p style="margin: 4px 0; font-size: 14px; color: #78350f;">Phone: ${customer.phone_number}</p>` : ''}
+                  <p style="margin: 4px 0; font-size: 14px; color: #78350f;">Amount: ${trialCurrency} ${customer.payment_amount || 0}/month</p>
+                </div>
+                <p style="font-size: 14px; color: #475569;">
+                  ${customer.phone_number ? 'A WhatsApp message with a payment link has been sent to the customer.' : 'No phone number on file — consider reaching out manually.'}
+                </p>
+                <div style="text-align: center; margin: 20px 0;">
+                  <a href="${appUrl}" style="background: #f59e0b; color: white; padding: 10px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 15px;">
+                    View Customers
+                  </a>
+                </div>
+              </div>
+            </div>
+          `,
+        }).catch(err => console.error(`[TrialExpiry Email] Failed for merchant ${user.email}:`, err));
+      }
 
       sentCount++;
     } catch (err) {

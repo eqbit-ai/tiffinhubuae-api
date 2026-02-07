@@ -8,6 +8,7 @@ import functionRoutes from './routes/functions';
 import integrationRoutes from './routes/integrations';
 import webhookRoutes from './routes/webhooks';
 import portalRoutes from './routes/portal';
+import driverRoutes from './routes/driver';
 import { startCronJobs } from './cron';
 
 const app = express();
@@ -41,6 +42,7 @@ app.use('/api/functions', functionRoutes);
 app.use('/api/integrations', integrationRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/portal', portalRoutes);
+app.use('/api/driver', driverRoutes);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entityRoutes);
 
