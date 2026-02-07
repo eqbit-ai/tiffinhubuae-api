@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { stripe, STRIPE_WEBHOOK_SECRET } from '../services/stripe';
 import { sendEmail } from '../services/email';
 import { sendSMS } from '../services/sms';
+import { sendWhatsAppMessage } from '../services/whatsapp';
 import { addMonths, format } from 'date-fns';
 
 const router = Router();
@@ -126,9 +127,11 @@ router.post('/stripe', async (req: Request, res: Response) => {
             // Confirm to customer
             if (customer?.phone_number) {
               try {
-                await sendSMS({
+                await sendWhatsAppMessage({
                   to: customer.phone_number,
-                  message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n${order.delivery_date ? `Delivery: ${order.delivery_date}` : ''}\n\nThank you!`,
+                  message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n\nThank you!`,
+                  templateName: 'ORDER_CONFIRMED',
+                  contentVariables: { '1': customer.full_name, '2': order.currency || 'AED', '3': String(order.total_amount) },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -180,9 +183,11 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
             if (customer.phone_number) {
               try {
-                await sendSMS({
+                await sendWhatsAppMessage({
                   to: customer.phone_number,
                   message: `Renewal Successful\n\nHello ${customer.full_name},\n\nYour subscription has been renewed!\n\nAmount: ${currency} ${amount}\nValid until: ${endFormatted}\n\nThank you for continuing with us!`,
+                  templateName: 'PAYMENT_RECEIVED',
+                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -259,9 +264,11 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
             if (customer.phone_number) {
               try {
-                await sendSMS({
+                await sendWhatsAppMessage({
                   to: customer.phone_number,
                   message: `Payment Received!\n\nHello ${customer.full_name},\n\nYour payment of ${currency} ${amount} has been received. Your trial has been converted to a full subscription!\n\nActive until: ${endFormatted}\n\nThank you!`,
+                  templateName: 'PAYMENT_RECEIVED',
+                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -334,9 +341,11 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
             if (customer.phone_number) {
               try {
-                await sendSMS({
+                await sendWhatsAppMessage({
                   to: customer.phone_number,
                   message: `Payment Received\n\nHello ${customer.full_name},\n\nPayment of ${currency} ${amount} received!\n\nYour subscription is now active until ${endFormatted}.\n\nThank you!`,
+                  templateName: 'PAYMENT_RECEIVED',
+                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }

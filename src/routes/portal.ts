@@ -4,6 +4,7 @@ import { format, addDays, addMonths, differenceInDays, parseISO } from 'date-fns
 import { sendEmail } from '../services/email';
 import { stripe } from '../services/stripe';
 import { sendSMS } from '../services/sms';
+import { sendWhatsAppMessage } from '../services/whatsapp';
 import { customerAuthMiddleware, CustomerAuthRequest, generateCustomerToken } from '../middleware/auth';
 
 const router = Router();
@@ -87,10 +88,12 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       },
     });
 
-    // Send OTP via SMS
-    const smsResult = await sendSMS({
+    // Send OTP via WhatsApp
+    const smsResult = await sendWhatsAppMessage({
       to: customerPhone,
       message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
+      templateName: 'OTP_LOGIN',
+      contentVariables: { '1': 'TiffinHub', '2': otpCode },
     });
 
     if (!smsResult || !smsResult.success) {

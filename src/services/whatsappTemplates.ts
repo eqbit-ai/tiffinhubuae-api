@@ -30,8 +30,8 @@ export const TEMPLATES = {
   PAYMENT_RECEIVED: process.env.TWILIO_TPL_PAYMENT_RECEIVED || '',
 
   // 6. Order Confirmed (customer)
-  // Template body: "Thank you {{1}}! Your order of {{2}} {{3}} has been confirmed. {{4}}"
-  // Variables: {{1}} = name, {{2}} = currency, {{3}} = amount, {{4}} = delivery info
+  // Template body: "Thank you {{1}}! Your order of {{2}} {{3}} has been confirmed."
+  // Variables: {{1}} = name, {{2}} = currency, {{3}} = amount
   ORDER_CONFIRMED: process.env.TWILIO_TPL_ORDER_CONFIRMED || '',
 
   // 7. New Order Alert (merchant)

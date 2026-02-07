@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly } from '../middleware/auth';
 import { sendEmail } from '../services/email';
 import { sendSMS } from '../services/sms';
+import { sendWhatsAppMessage } from '../services/whatsapp';
 import { stripe, STRIPE_PREMIUM_PRICE_ID } from '../services/stripe';
 import { addDays, format } from 'date-fns';
 
@@ -156,9 +157,11 @@ router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthReques
     const currency = user.currency || 'AED';
     const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\nAmount Due: ${currency} ${customer.payment_amount}\n${customer.due_date ? `Due Date: ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
 
-    await sendSMS({
+    await sendWhatsAppMessage({
       to: customer.phone_number,
       message,
+      templateName: 'PAYMENT_REMINDER',
+      contentVariables: { '1': customer.full_name, '2': currency, '3': String(customer.payment_amount) },
     });
     await sendEmail({
       to: user.email,
@@ -199,9 +202,11 @@ router.post('/send-bulk-payment-reminders', checkPremiumAccess, async (req: Auth
       try {
         const bulkCurrency = user.currency || 'AED';
         const message = `Payment Reminder\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in ${customer.days_remaining} days.\n\nAmount Due: ${bulkCurrency} ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you!`;
-        await sendSMS({
+        await sendWhatsAppMessage({
           to: customer.phone_number,
           message,
+          templateName: 'PAYMENT_REMINDER',
+          contentVariables: { '1': customer.full_name, '2': bulkCurrency, '3': String(customer.payment_amount) },
         });
         sentCount++;
       } catch (error: any) {
@@ -1423,9 +1428,11 @@ export async function runAutoPaymentReminders() {
 
         const endDateFormatted = customer.end_date ? format(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
 
-        await sendSMS({
+        await sendWhatsAppMessage({
           to: customer.phone_number,
           message: `Payment Reminder\n\nHello ${customer.full_name},\n\nYour tiffin subscription ends on ${endDateFormatted}.\n\nAmount: ${currency.toUpperCase()} ${amount}\n\nPay securely here: ${session.url}\n\nThank you!`,
+          templateName: 'PAYMENT_REMINDER_LINK',
+          contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url! },
         });
 
         await prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
@@ -1495,9 +1502,11 @@ export async function runAutoPaymentReminders() {
 
         const endDateFormatted = customer.end_date ? format(new Date(customer.end_date), 'dd MMM yyyy') : 'N/A';
 
-        await sendSMS({
+        await sendWhatsAppMessage({
           to: customer.phone_number,
           message: `Payment Overdue\n\nHello ${customer.full_name},\n\nYour subscription expired on ${endDateFormatted} and payment is overdue.\n\nAmount Due: ${currency.toUpperCase()} ${amount}\n\nPay now to continue: ${session.url}\n\nThank you!`,
+          templateName: 'PAYMENT_OVERDUE',
+          contentVariables: { '1': customer.full_name, '2': endDateFormatted, '3': currency.toUpperCase(), '4': String(amount), '5': session.url! },
         });
 
         await prisma.customer.update({
