@@ -218,6 +218,83 @@ router.post('/stripe', async (req: Request, res: Response) => {
           break;
         }
 
+        // Handle trial conversion payment
+        if (customerId && session.metadata?.payment_type === 'trial_conversion') {
+          const customerOwnerEmail = session.metadata?.customer_owner_email;
+          console.log(`[Webhook] Trial conversion payment — customerId: ${customerId}, ownerEmail: ${customerOwnerEmail}`);
+          if (!customerOwnerEmail) { console.log('[Webhook] No customer_owner_email for trial conversion, skipping'); break; }
+
+          const ownerUser = await prisma.user.findUnique({ where: { email: customerOwnerEmail } });
+          if (!ownerUser) { console.log(`[Webhook] Owner user not found for trial conversion: ${customerOwnerEmail}`); break; }
+
+          const customer = await prisma.customer.findFirst({
+            where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
+          });
+
+          if (customer) {
+            const amount = session.amount_total / 100;
+            const currency = (session.currency || 'aed').toUpperCase();
+            console.log(`[Webhook] Processing trial conversion for ${customer.full_name} — ${currency} ${amount}`);
+
+            const newStartDate = new Date();
+            const newEndDate = addMonths(newStartDate, 1);
+
+            await prisma.customer.update({
+              where: { id: customer.id },
+              data: {
+                payment_status: 'Paid',
+                last_payment_date: new Date(),
+                last_payment_amount: amount,
+                status: 'active',
+                active: true,
+                is_trial: false,
+                trial_converted: true,
+                inactive_reason: null,
+                reminder_before_sent: false,
+                reminder_after_sent: false,
+                start_date: newStartDate,
+                end_date: newEndDate,
+                due_date: newEndDate,
+                paid_days: 30,
+                delivered_days: 0,
+                days_remaining: 30,
+              },
+            });
+
+            const endFormatted = format(newEndDate, 'dd MMM yyyy');
+
+            if (customer.phone_number) {
+              try {
+                await sendWhatsAppMessage({
+                  to: customer.phone_number,
+                  message: `Payment Received!\n\nHello ${customer.full_name},\n\nYour payment of ${currency} ${amount} has been received. Your trial has been converted to a full subscription!\n\nActive until: ${endFormatted}\n\nThank you!`,
+                  templateName: 'PAYMENT_RECEIVED',
+                  contentVariables: { '1': customer.full_name, '2': currency, '3': String(amount), '4': endFormatted },
+                });
+              } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
+            }
+
+            await sendEmail({
+              to: customerOwnerEmail,
+              subject: `✅ Trial Converted - ${customer.full_name}`,
+              body: `<h2>Trial Converted to Paid</h2>
+<p><strong>${customer.full_name}</strong> has paid <strong>${currency} ${amount}</strong> and converted from trial to a full subscription.</p>
+<p><strong>Subscription:</strong> ${format(newStartDate, 'dd MMM yyyy')} → ${endFormatted}</p>`,
+            });
+
+            const paymentLinks = await prisma.paymentLink.findMany({
+              where: { customer_id: customerId, created_by: ownerUser.id, stripe_checkout_session_id: session.id },
+            });
+            if (paymentLinks.length > 0) {
+              await prisma.paymentLink.update({
+                where: { id: paymentLinks[0].id },
+                data: { status: 'paid', paid_at: new Date(), stripe_payment_intent_id: session.payment_intent },
+              });
+            }
+          }
+          break;
+        }
+
         // Handle customer tiffin payment (legacy flow)
         if (customerId) {
           const customerOwnerEmail = session.metadata?.customer_owner_email;
