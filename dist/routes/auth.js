@@ -243,7 +243,7 @@ router.post('/forgot-password', async (req, res) => {
             });
             const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
             const resetLink = `${frontendUrl}/reset-password?token=${token}`;
-            await (0, email_1.sendEmail)({
+            (0, email_1.sendEmail)({
                 to: email,
                 subject: 'Reset your TiffinHub password',
                 body: `
@@ -253,7 +253,7 @@ router.post('/forgot-password', async (req, res) => {
           <p>This link expires in 1 hour.</p>
           <p>If you didn't request this, you can safely ignore this email.</p>
         `,
-            });
+            }).catch(err => console.error('[Email] Forgot password send failed:', err));
         }
         // Always return success to avoid revealing whether the email exists
         res.json({ message: 'If an account with that email exists, a reset link has been sent.' });

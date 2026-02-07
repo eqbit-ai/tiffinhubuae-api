@@ -9,6 +9,9 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
 });
 
 export async function sendEmail(params: { to: string; subject: string; body: string }) {
@@ -17,12 +20,16 @@ export async function sendEmail(params: { to: string; subject: string; body: str
     return { success: false, reason: 'SMTP not configured' };
   }
 
-  const info = await transporter.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
-    to: params.to,
-    subject: params.subject,
-    html: params.body,
-  });
-
-  return { success: true, messageId: info.messageId };
+  try {
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: params.to,
+      subject: params.subject,
+      html: params.body,
+    });
+    return { success: true, messageId: info.messageId };
+  } catch (err: any) {
+    console.error('[Email] Failed to send:', params.subject, '-', err.message);
+    return { success: false, reason: err.message };
+  }
 }

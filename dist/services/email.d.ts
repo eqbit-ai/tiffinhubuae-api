@@ -4,11 +4,11 @@ export declare function sendEmail(params: {
     body: string;
 }): Promise<{
     success: boolean;
-    reason: string;
-    messageId?: undefined;
-} | {
-    success: boolean;
     messageId: string;
     reason?: undefined;
+} | {
+    success: boolean;
+    reason: any;
+    messageId?: undefined;
 }>;
 //# sourceMappingURL=email.d.ts.map
