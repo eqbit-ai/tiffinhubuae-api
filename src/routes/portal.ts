@@ -4,7 +4,7 @@ import { format, addDays, addMonths, differenceInDays, parseISO } from 'date-fns
 import { sendEmail } from '../services/email';
 import { stripe } from '../services/stripe';
 import { sendSMS } from '../services/sms';
-import { sendWhatsAppMessage } from '../services/whatsapp';
+import { sendMerchantWhatsApp } from '../services/whatsapp';
 import { customerAuthMiddleware, CustomerAuthRequest, generateCustomerToken } from '../middleware/auth';
 
 const router = Router();
@@ -88,8 +88,8 @@ router.post('/auth/request-otp', async (req: Request, res: Response) => {
       },
     });
 
-    // Send OTP via WhatsApp
-    const smsResult = await sendWhatsAppMessage({
+    // Send OTP via WhatsApp (counts toward merchant's 400 limit)
+    const smsResult = await sendMerchantWhatsApp(merchant_id, {
       to: customerPhone,
       message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
       templateName: 'OTP_LOGIN',
@@ -276,6 +276,27 @@ router.put('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
       where: { id: customer.id },
       data: updateData,
     });
+
+    // Notify merchant about profile changes
+    const merchant = await prisma.user.findUnique({ where: { id: customer.created_by } });
+    if (merchant) {
+      const changedFields = Object.keys(updateData).map(f => `<li><strong>${f.replace(/_/g, ' ')}:</strong> ${updateData[f]}</li>`).join('');
+      sendEmail({
+        to: merchant.email,
+        subject: `Customer Profile Updated - ${customer.full_name}`,
+        body: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 24px; border-radius: 12px 12px 0 0; text-align: center;">
+              <h1 style="color: white; margin: 0; font-size: 24px;">Customer Profile Updated</h1>
+            </div>
+            <div style="background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+              <p style="font-size: 15px; color: #334155;"><strong>${customer.full_name}</strong> updated their profile via the customer portal:</p>
+              <ul style="font-size: 14px; color: #475569; line-height: 1.8;">${changedFields}</ul>
+            </div>
+          </div>
+        `,
+      }).catch(err => console.error('[Email] Profile update notification failed:', err));
+    }
 
     res.json({ success: true, customer: updated });
   } catch (error: any) {
@@ -640,6 +661,31 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
           customer_name: customer.full_name,
         },
       });
+
+      // Email merchant about new extra order
+      const itemsList = orderItems.map((it: any) => `${it.name} x${it.quantity} — ${currency.toUpperCase()} ${(it.price * it.quantity).toFixed(2)}`).join('<br/>');
+      sendEmail({
+        to: merchant.email,
+        subject: `New Extra Order - ${customer.full_name} (Cash)`,
+        body: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 24px; border-radius: 12px 12px 0 0; text-align: center;">
+              <h1 style="color: white; margin: 0; font-size: 24px;">New Extra Order</h1>
+            </div>
+            <div style="background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+              <p style="font-size: 15px; color: #334155;"><strong>${customer.full_name}</strong> placed a cash order:</p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                <p style="font-size: 14px; color: #475569; line-height: 1.8; margin: 0;">${itemsList}</p>
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 12px 0;" />
+                <p style="font-size: 16px; font-weight: bold; color: #334155; margin: 0;">Total: ${currency.toUpperCase()} ${totalAmount.toFixed(2)}</p>
+              </div>
+              <p style="font-size: 14px; color: #475569;"><strong>Payment:</strong> Cash</p>
+              ${delivery_date ? `<p style="font-size: 14px; color: #475569;"><strong>Delivery:</strong> ${delivery_date}${delivery_time ? ' at ' + delivery_time : ''}</p>` : ''}
+              ${special_notes ? `<p style="font-size: 14px; color: #475569;"><strong>Notes:</strong> ${special_notes}</p>` : ''}
+            </div>
+          </div>
+        `,
+      }).catch(err => console.error('[Email] Extra order notification failed:', err));
 
       return res.json({
         success: true,
