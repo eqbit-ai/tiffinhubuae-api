@@ -497,7 +497,7 @@ router.get('/menu', customerAuthMiddleware, async (req: CustomerAuthRequest, res
     const customer = req.customer!;
 
     const menuItems = await prisma.menuItem.findMany({
-      where: { created_by: customer.merchant_id, is_active: true },
+      where: { created_by: customer.merchant_id, is_active: true, price: { gt: 0 } },
       orderBy: [{ category: 'asc' }, { name: 'asc' }],
     });
 
