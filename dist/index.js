@@ -13,6 +13,7 @@ const functions_1 = __importDefault(require("./routes/functions"));
 const integrations_1 = __importDefault(require("./routes/integrations"));
 const webhooks_1 = __importDefault(require("./routes/webhooks"));
 const portal_1 = __importDefault(require("./routes/portal"));
+const driver_1 = __importDefault(require("./routes/driver"));
 const cron_1 = require("./cron");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
@@ -40,6 +41,7 @@ app.use('/api/functions', functions_1.default);
 app.use('/api/integrations', integrations_1.default);
 app.use('/api/webhooks', webhooks_1.default);
 app.use('/api/portal', portal_1.default);
+app.use('/api/driver', driver_1.default);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entities_1.default);
 app.listen(PORT, () => {

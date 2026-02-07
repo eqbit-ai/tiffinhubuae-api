@@ -56,6 +56,46 @@ router.post('/register', async (req, res) => {
         });
         const token = (0, auth_1.generateToken)(user.id);
         const { password_hash: _, ...safeUser } = user;
+        // Send welcome email (non-blocking)
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        (0, email_1.sendEmail)({
+            to: email,
+            subject: 'Welcome to TiffinHub Manager!',
+            body: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px;">Welcome to TiffinHub!</h1>
+          </div>
+          <div style="background: #ffffff; padding: 30px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="font-size: 16px; color: #334155;">Hi ${full_name || 'there'},</p>
+            <p style="font-size: 15px; color: #475569; line-height: 1.6;">
+              Thank you for signing up! Your <strong>7-day free trial</strong> is now active.
+              You have full access to all features — start adding customers, managing menus, and tracking deliveries right away.
+            </p>
+            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+              <p style="margin: 0 0 8px; font-weight: bold; color: #166534;">Your trial includes:</p>
+              <ul style="margin: 0; padding-left: 20px; color: #15803d; font-size: 14px; line-height: 1.8;">
+                <li>Unlimited customers & orders</li>
+                <li>Delivery management with driver tracking</li>
+                <li>WhatsApp notifications & payment reminders</li>
+                <li>Kitchen display, labels, analytics & more</li>
+              </ul>
+            </div>
+            <p style="font-size: 15px; color: #475569;">
+              Trial ends on: <strong>${trialEndsAt.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</strong>
+            </p>
+            <div style="text-align: center; margin: 24px 0;">
+              <a href="${frontendUrl}" style="background: #6366f1; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 16px;">
+                Open Dashboard
+              </a>
+            </div>
+            <p style="font-size: 13px; color: #94a3b8; text-align: center; margin-top: 24px;">
+              Need help? Reply to this email or visit your Settings page.
+            </p>
+          </div>
+        </div>
+      `,
+        }).catch(err => console.error('[Welcome Email] Failed:', err));
         res.status(201).json({ token, user: safeUser });
     }
     catch (error) {
