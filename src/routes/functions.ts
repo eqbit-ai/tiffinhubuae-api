@@ -1789,6 +1789,8 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
         await sendMerchantWhatsApp(user.id, {
           to: customer.phone_number,
           message: `Hello ${customer.full_name}!\n\nHere is your customer portal link:\n${portalUrl}\n\nYou can view your subscription, skip dates, and manage your account.\n\nThank you!`,
+          templateName: 'PORTAL_LINK',
+          contentVariables: { 'name': customer.full_name || 'Customer', 'portal link': portalUrl },
         });
         whatsappSent = true;
       } catch (e: any) { console.error('[Functions] Portal WhatsApp send failed:', e.message); }

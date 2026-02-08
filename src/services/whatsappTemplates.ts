@@ -48,6 +48,11 @@ export const TEMPLATES = {
 
   // 10. Registration Status — not yet created
   REGISTRATION_STATUS: process.env.TWILIO_TPL_REGISTRATION || '',
+
+  // 11. Customer Portal Link
+  // Body: "Hello {{name}}, here is your customer portal link: {{portal link}}. You can view your subscription, skip dates, and manage your account."
+  // Variables: "name", "portal link"
+  PORTAL_LINK: process.env.TWILIO_TPL_PORTAL_LINK || '',
 };
 
 // Helper to check if a template is configured
