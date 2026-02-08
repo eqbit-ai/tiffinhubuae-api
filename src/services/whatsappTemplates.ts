@@ -50,8 +50,8 @@ export const TEMPLATES = {
   REGISTRATION_STATUS: process.env.TWILIO_TPL_REGISTRATION || '',
 
   // 11. Customer Portal Link
-  // Body: "Hello {{name}}, here is your customer portal link: {{portal link}}. You can view your subscription, skip dates, and manage your account."
-  // Variables: "name", "portal link"
+  // Body: "Hello {{name}}, here is your customer portal link: {{customer portal}}!"
+  // Variables: "name", "customer portal"
   PORTAL_LINK: process.env.TWILIO_TPL_PORTAL_LINK || '',
 };
 
