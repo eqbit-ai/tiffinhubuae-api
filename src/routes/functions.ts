@@ -1779,8 +1779,8 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
       await prisma.customer.update({ where: { id: customer.id }, data: { portal_token: token } });
     }
 
-    const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
-    const portalUrl = `${origin}/CustomerPortal?token=${token}`;
+    const origin = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const portalUrl = `${origin}/portal/login?merchant=${user.id}`;
 
     // Send portal link via WhatsApp if customer has phone
     let whatsappSent = false;
@@ -1796,7 +1796,7 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
       } catch (e: any) { console.error('[Functions] Portal WhatsApp send failed:', e.message); }
     }
 
-    res.json({ success: true, portalUrl, token, whatsappSent });
+    res.json({ success: true, portalUrl, whatsappSent });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

@@ -8,6 +8,19 @@ const router = Router();
 
 // Multer setup for delivery photos
 const uploadsDir = path.join(__dirname, '../../uploads');
+
+const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
+
+const imageFilter: multer.Options['fileFilter'] = (_req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (IMAGE_MIME_TYPES.has(file.mimetype) && IMAGE_EXTENSIONS.has(ext)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files (jpg, png, gif, webp) are allowed'));
+  }
+};
+
 const storage = multer.diskStorage({
   destination: uploadsDir,
   filename: (_req, file, cb) => {
@@ -15,7 +28,7 @@ const storage = multer.diskStorage({
     cb(null, uniqueName);
   },
 });
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: imageFilter });
 
 // POST /api/driver/auth — validate access_code, return driver JWT + merchant info
 router.post('/auth', async (req, res) => {

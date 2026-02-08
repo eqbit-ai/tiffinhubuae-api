@@ -7,12 +7,22 @@ import { sendEmail } from '../services/email';
 
 const router = Router();
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
     const { email, password, full_name } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -103,7 +113,8 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({ token, user: safeUser });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Register] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -113,6 +124,10 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
     }
 
     const user = await prisma.user.findUnique({ where: { email } });
@@ -129,7 +144,8 @@ router.post('/login', async (req, res) => {
     const { password_hash: _, ...safeUser } = user;
     res.json({ token, user: safeUser });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Login] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -159,7 +175,8 @@ router.put('/me', authMiddleware, async (req: AuthRequest, res) => {
     const { password_hash: _, ...safeUser } = updated;
     res.json(safeUser);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Update Profile] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -172,11 +189,15 @@ router.post('/impersonate', authMiddleware, superAdminOnly, async (req: AuthRequ
     const targetUser = await prisma.user.findUnique({ where: { email } });
     if (!targetUser) return res.status(404).json({ error: 'User not found' });
 
+    // Audit log: who impersonated whom
+    console.log(`[IMPERSONATION] Admin ${req.user!.email} (${req.user!.id}) impersonated ${email} (${targetUser.id}) at ${new Date().toISOString()}`);
+
     const token = generateToken(targetUser.id);
     const { password_hash: _, ...safeUser } = targetUser;
     res.json({ token, user: safeUser });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Impersonate] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -233,7 +254,8 @@ router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) =
 
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Delete Account] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -243,6 +265,10 @@ router.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
     }
 
     const user = await prisma.user.findUnique({ where: { email } });
@@ -274,7 +300,8 @@ router.post('/forgot-password', async (req, res) => {
     // Always return success to avoid revealing whether the email exists
     res.json({ message: 'If an account with that email exists, a reset link has been sent.' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Forgot Password] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -284,6 +311,10 @@ router.post('/reset-password', async (req, res) => {
     const { token, password } = req.body;
     if (!token || !password) {
       return res.status(400).json({ error: 'Token and password are required' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
     const user = await prisma.user.findFirst({
@@ -327,7 +358,8 @@ router.post('/reset-password', async (req, res) => {
 
     res.json({ message: 'Password has been reset successfully' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Reset Password] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

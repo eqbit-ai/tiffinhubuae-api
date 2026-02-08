@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
-import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { authMiddleware, checkActiveSubscription, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -166,7 +166,7 @@ function buildWhere(config: typeof entityConfig[string], user: AuthRequest['user
 
 // Super admin check
 function isSuperAdmin(user: AuthRequest['user']): boolean {
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
+  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
   return user?.email === DEFAULT_SUPER_ADMIN || user?.is_super_admin === true;
 }
 
@@ -302,7 +302,7 @@ router.get('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
 });
 
 // POST /api/:entity
-router.post('/:entity', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: AuthRequest, res) => {
   const config = entityConfig[req.params.entity as string];
   if (!config) return res.status(404).json({ error: 'Unknown entity' });
 
@@ -357,7 +357,7 @@ router.post('/:entity', authMiddleware, async (req: AuthRequest, res) => {
 });
 
 // PUT /api/:entity/:id
-router.put('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
+router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: AuthRequest, res) => {
   const entity = req.params.entity as string;
   const id = req.params.id as string;
   console.log(`[PUT] → ${entity}/${id} by user ${req.user?.id}`);
@@ -426,7 +426,7 @@ router.put('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
 });
 
 // DELETE /api/:entity/:id
-router.delete('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
+router.delete('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: AuthRequest, res) => {
   const config = entityConfig[req.params.entity as string];
   if (!config) return res.status(404).json({ error: 'Unknown entity' });
 

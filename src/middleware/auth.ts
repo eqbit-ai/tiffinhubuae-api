@@ -67,23 +67,56 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
   }
 }
 
+function isUserSuperAdmin(user: AuthRequest['user']): boolean {
+  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
+  return user?.email === DEFAULT_SUPER_ADMIN || user?.is_super_admin === true;
+}
+
 export function superAdminOnly(req: AuthRequest, res: Response, next: NextFunction) {
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
-  const isSuperAdmin = req.user?.email === DEFAULT_SUPER_ADMIN || req.user?.is_super_admin === true;
-  if (!isSuperAdmin) {
+  if (!isUserSuperAdmin(req.user)) {
     return res.status(403).json({ error: 'Forbidden: Super Admin only' });
   }
   next();
 }
 
+export function checkActiveSubscription(req: AuthRequest, res: Response, next: NextFunction) {
+  const user = req.user!;
+
+  // Super admins and special_access users bypass subscription check
+  if (isUserSuperAdmin(user)) return next();
+  const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
+  if (hasSpecialAccess) return next();
+
+  const status = user.subscription_status;
+  if (status === 'expired' || status === 'cancelled') {
+    return res.status(403).json({
+      error: 'Your subscription has expired. Please renew to continue.',
+      subscription_status: status,
+      renewal_required: true,
+    });
+  }
+
+  next();
+}
+
 export function checkPremiumAccess(req: AuthRequest, res: Response, next: NextFunction) {
   const user = req.user!;
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
-  const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin === true;
-  const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-  const hasPremiumAccess = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
 
-  if (!hasPremiumAccess) {
+  if (isUserSuperAdmin(user)) return next();
+  const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
+  if (hasSpecialAccess) return next();
+
+  // Check subscription is active first
+  const status = user.subscription_status;
+  if (status === 'expired' || status === 'cancelled') {
+    return res.status(403).json({
+      error: 'Your subscription has expired. Please renew to continue.',
+      subscription_status: status,
+      renewal_required: true,
+    });
+  }
+
+  if (user.plan_type !== 'premium') {
     return res.status(403).json({
       error: 'This feature is available in the Premium plan',
       current_plan: user.plan_type || 'none',
