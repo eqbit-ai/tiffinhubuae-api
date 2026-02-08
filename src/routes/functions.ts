@@ -1782,7 +1782,19 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
     const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
     const portalUrl = `${origin}/CustomerPortal?token=${token}`;
 
-    res.json({ success: true, portalUrl, token });
+    // Send portal link via WhatsApp if customer has phone
+    let whatsappSent = false;
+    if (customer.phone_number) {
+      try {
+        await sendMerchantWhatsApp(user.id, {
+          to: customer.phone_number,
+          message: `Hello ${customer.full_name}!\n\nHere is your customer portal link:\n${portalUrl}\n\nYou can view your subscription, skip dates, and manage your account.\n\nThank you!`,
+        });
+        whatsappSent = true;
+      } catch (e: any) { console.error('[Functions] Portal WhatsApp send failed:', e.message); }
+    }
+
+    res.json({ success: true, portalUrl, token, whatsappSent });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
