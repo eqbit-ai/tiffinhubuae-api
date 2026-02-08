@@ -358,17 +358,28 @@ router.post('/:entity', authMiddleware, async (req: AuthRequest, res) => {
 
 // PUT /api/:entity/:id
 router.put('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
-  const config = entityConfig[req.params.entity as string];
-  if (!config) return res.status(404).json({ error: 'Unknown entity' });
+  const entity = req.params.entity as string;
+  const id = req.params.id as string;
+  console.log(`[PUT] → ${entity}/${id} by user ${req.user?.id}`);
+
+  const config = entityConfig[entity];
+  if (!config) {
+    console.log(`[PUT] Unknown entity: ${entity}`);
+    return res.status(404).json({ error: 'Unknown entity' });
+  }
 
   try {
-    const existing = await config.model().findUnique({ where: { id: req.params.id } });
-    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const existing = await config.model().findUnique({ where: { id } });
+    if (!existing) {
+      console.log(`[PUT] Not found: ${entity}/${id}`);
+      return res.status(404).json({ error: 'Not found' });
+    }
 
     // Ownership check
     if (config.ownerField && !isSuperAdmin(req.user)) {
       const ownerVal = config.ownerValue === 'email' ? req.user!.email : req.user!.id;
       if ((existing as any)[config.ownerField] !== ownerVal) {
+        console.log(`[PUT] Access denied: ${entity}/${id} owner=${(existing as any)[config.ownerField]} user=${ownerVal}`);
         return res.status(403).json({ error: 'Access denied' });
       }
     }
@@ -385,12 +396,10 @@ router.put('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
     coerceBooleans(updateData);
     coerceDates(updateData);
 
-    console.log('[PUT] entity:', req.params.entity, 'id:', req.params.id);
     console.log('[PUT] updateData keys:', Object.keys(updateData));
-    console.log('[PUT] updateData:', JSON.stringify(updateData).slice(0, 500));
     let record;
     try {
-      record = await config.model().update({ where: { id: req.params.id }, data: updateData });
+      record = await config.model().update({ where: { id }, data: updateData });
     } catch (innerErr: any) {
       console.log('[PUT] innerErr:', innerErr.message?.slice(0, 300));
       // If Prisma rejects unknown fields, strip them and retry
@@ -398,15 +407,20 @@ router.put('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
         const matches = innerErr.message.match(/Unknown (?:arg|argument|field) `(\w+)`/g) || [];
         for (const m of matches) {
           const field = m.match(/`(\w+)`/)?.[1];
-          if (field) delete updateData[field];
+          if (field) {
+            console.log(`[PUT] Stripping unknown field: ${field}`);
+            delete updateData[field];
+          }
         }
-        record = await config.model().update({ where: { id: req.params.id }, data: updateData });
+        record = await config.model().update({ where: { id }, data: updateData });
       } else {
         throw innerErr;
       }
     }
+    console.log(`[PUT] ✓ ${entity}/${id} updated`);
     res.json(addVirtualFields(record));
   } catch (error: any) {
+    console.error(`[PUT] ✗ ${entity}/${id} error:`, error.message?.slice(0, 300));
     res.status(500).json({ error: error.message });
   }
 });
