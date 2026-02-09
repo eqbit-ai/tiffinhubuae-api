@@ -12,6 +12,7 @@ const dateFields = new Set([
   'subscription_start_date', 'payment_date', 'expires_at', 'paid_at',
   'trial_end_date', 'period_start', 'period_end',
   'given_date', 'last_reminder', 'delivered_at', 'prepared_at',
+  'resolved_at',
 ]);
 
 // Boolean fields that may arrive as strings from CSV imports

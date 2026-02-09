@@ -347,14 +347,18 @@ model Wastage {
 }
 
 model SupportTicket {
-  id         String   @id @default(cuid())
-  user_email String
-  subject    String
-  message    String?
-  status     String   @default("open")
-  priority   String?  @default("medium")
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  id          String    @id @default(cuid())
+  user_email  String
+  user_name   String?
+  subject     String
+  message     String?
+  status      String    @default("open")
+  priority    String?   @default("medium")
+  admin_notes String?
+  resolved_at DateTime?
+  resolved_by String?
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
 
   @@index([user_email])
 }
