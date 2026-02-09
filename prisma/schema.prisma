@@ -697,3 +697,23 @@ model OneTimeOrder {
   @@index([customer_id])
   @@index([created_by])
 }
+
+model SystemLog {
+  id            String    @id @default(cuid())
+  log_type      String    @default("error")
+  severity      String    @default("medium")
+  source        String
+  message       String
+  error_details String?
+  affected_user String?
+  resolved      Boolean   @default(false)
+  resolved_by   String?
+  resolved_date DateTime?
+  created_by    String?
+  created_at    DateTime  @default(now())
+
+  @@index([log_type])
+  @@index([severity])
+  @@index([resolved])
+  @@index([created_at])
+}

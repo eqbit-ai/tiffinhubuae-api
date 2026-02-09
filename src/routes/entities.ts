@@ -12,7 +12,7 @@ const dateFields = new Set([
   'subscription_start_date', 'payment_date', 'expires_at', 'paid_at',
   'trial_end_date', 'period_start', 'period_end',
   'given_date', 'last_reminder', 'delivered_at', 'prepared_at',
-  'resolved_at',
+  'resolved_at', 'resolved_date',
 ]);
 
 // Boolean fields that may arrive as strings from CSV imports
@@ -133,6 +133,7 @@ const entityConfig: Record<string, {
   prep_items: { model: () => prisma.prepItem, ownerField: 'created_by', ownerValue: 'id' },
   chat_messages: { model: () => prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
   one_time_orders: { model: () => prisma.oneTimeOrder, ownerField: 'created_by', ownerValue: 'id' },
+  system_logs: { model: () => prisma.systemLog, ownerField: 'created_by', ownerValue: 'id', listAll: true },
 };
 
 // Helper to build where clause with tenant isolation
@@ -229,6 +230,11 @@ router.get('/:entity', authMiddleware, async (req: AuthRequest, res) => {
   const config = entityConfig[entity];
   if (!config) return res.status(404).json({ error: 'Unknown entity' });
 
+  // Restrict listAll entities (e.g. system_logs) to super admins
+  if (config.listAll && !isSuperAdmin(req.user)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
   try {
     const { where: whereJson, sortBy, limit, offset, all } = req.query as Record<string, string | undefined>;
     let filters: any = {};
@@ -236,8 +242,8 @@ router.get('/:entity', authMiddleware, async (req: AuthRequest, res) => {
       try { filters = JSON.parse(whereJson as string); } catch {}
     }
 
-    // Super admins with ?all=true can bypass tenant isolation
-    const bypassTenant = all === 'true' && isSuperAdmin(req.user);
+    // Super admins with ?all=true (or listAll entities) can bypass tenant isolation
+    const bypassTenant = (all === 'true' || config.listAll) && isSuperAdmin(req.user);
     const where = bypassTenant ? filters : buildWhere(config, req.user, filters);
 
     // Map common Base44 field names to Prisma column names

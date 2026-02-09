@@ -11,6 +11,7 @@ import webhookRoutes from './routes/webhooks';
 import portalRoutes from './routes/portal';
 import driverRoutes from './routes/driver';
 import { startCronJobs } from './cron';
+import { prisma } from './lib/prisma';
 
 // --- JWT_SECRET startup validation ---
 const jwtSecret = process.env.JWT_SECRET;
@@ -69,9 +70,31 @@ app.use('/uploads', (_req, res, next) => {
   next();
 }, express.static(path.join(__dirname, '../uploads')));
 
-// Health check (before auth-gated routes)
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Track server start time for uptime calculation
+const serverStartTime = Date.now();
+
+// Health check with real metrics (before auth-gated routes)
+app.get('/api/health', async (_req, res) => {
+  const mem = process.memoryUsage();
+  let dbStatus = 'ok';
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch {
+    dbStatus = 'down';
+  }
+
+  res.json({
+    status: dbStatus === 'ok' ? 'ok' : 'degraded',
+    timestamp: new Date().toISOString(),
+    uptime_seconds: Math.floor((Date.now() - serverStartTime) / 1000),
+    database: dbStatus,
+    memory: {
+      rss_mb: Math.round(mem.rss / 1024 / 1024),
+      heap_used_mb: Math.round(mem.heapUsed / 1024 / 1024),
+      heap_total_mb: Math.round(mem.heapTotal / 1024 / 1024),
+    },
+    node_version: process.version,
+  });
 });
 
 // Routes
@@ -83,6 +106,29 @@ app.use('/api/portal', portalRoutes);
 app.use('/api/driver', driverRoutes);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entityRoutes);
+
+// Global error handler — logs to SystemLog table
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status = err.status || 500;
+  const message = err.message || 'Internal server error';
+  console.error(`[ERROR] ${req.method} ${req.path}:`, message);
+
+  // Log server errors (5xx) to database asynchronously
+  if (status >= 500) {
+    prisma.systemLog.create({
+      data: {
+        log_type: 'error',
+        severity: 'high',
+        source: `${req.method} ${req.path}`,
+        message: message,
+        error_details: err.stack?.slice(0, 2000) || null,
+        affected_user: (req as any).user?.email || null,
+      },
+    }).catch((logErr: any) => console.error('[SystemLog] Failed to save:', logErr.message));
+  }
+
+  res.status(status).json({ error: message });
+});
 
 app.listen(PORT, () => {
   console.log(`TiffinHub API running on port ${PORT}`);
