@@ -201,9 +201,19 @@ router.put('/admin/users/:id', authMiddleware, async (req: AuthRequest, res) => 
     return res.status(403).json({ error: 'Forbidden' });
   }
   try {
+    const allowedFields = new Set([
+      'full_name', 'business_name', 'role', 'is_super_admin', 'special_access_type',
+      'subscription_status', 'plan_type', 'subscription_source',
+      'trial_ends_at', 'subscription_ends_at',
+    ]);
+    const updateData: Record<string, any> = {};
+    for (const field of allowedFields) {
+      if (field in req.body) updateData[field] = req.body[field];
+    }
+
     const user = await prisma.user.update({
       where: { id: req.params.id as string },
-      data: req.body,
+      data: updateData,
     });
     const { password_hash: _, ...safeUser } = user;
     res.json(safeUser);

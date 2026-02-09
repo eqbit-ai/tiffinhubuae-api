@@ -59,6 +59,8 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
+app.use('/api/driver/auth', authLimiter);
+app.use('/api/portal/send-otp', authLimiter);
 
 // Static file serving for uploads (with cross-origin headers for frontend)
 app.use('/uploads', (_req, res, next) => {
