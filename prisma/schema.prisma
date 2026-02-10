@@ -69,6 +69,7 @@ model Customer {
   address             String?
   area                String?
   meal_type           String?
+  menu_style          String?   @default("Set Menu")
   payment_amount      Float?    @default(0)
   payment_status      String?   @default("Pending")
   due_date            DateTime?
@@ -166,6 +167,7 @@ model MenuItem {
   description String?
   price       Float?   @default(0)
   category    String?
+  menu_type   String?   @default("set_menu")
   image_url   String?
   meal_type   String?
   calories    String?

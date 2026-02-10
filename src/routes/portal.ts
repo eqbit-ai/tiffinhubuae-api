@@ -234,6 +234,7 @@ router.get('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
         pause_resume_date: customer.pause_resume_date,
         status: customer.status,
         active: customer.active,
+        menu_style: customer.menu_style || 'Set Menu',
       },
       merchant: {
         id: customer.merchant_id,
@@ -520,22 +521,43 @@ router.get('/menu', customerAuthMiddleware, async (req: CustomerAuthRequest, res
   try {
     const customer = req.customer!;
 
-    const menuItems = await prisma.menuItem.findMany({
+    // Orderable items (à la carte or any item with price > 0)
+    const orderableItems = await prisma.menuItem.findMany({
       where: { created_by: customer.merchant_id, is_active: true, price: { gt: 0 } },
       orderBy: [{ category: 'asc' }, { name: 'asc' }],
+    });
+
+    // Today's set menu (informational)
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const today = dayNames[new Date().getDay()];
+    const todaysSetMenu = await prisma.menuItem.findMany({
+      where: {
+        created_by: customer.merchant_id,
+        is_active: true,
+        day_of_week: today,
+        menu_type: { not: 'ala_carte' },
+      },
+      orderBy: [{ meal_type: 'asc' }, { name: 'asc' }],
     });
 
     const merchant = await prisma.user.findUnique({ where: { id: customer.merchant_id } });
 
     res.json({
-      menu: menuItems.map((m) => ({
+      menu: orderableItems.map((m) => ({
         id: m.id,
-        name: m.name,
+        name: m.name || m.item_name,
         description: m.description,
         price: m.price,
         category: m.category,
         meal_type: m.meal_type,
         image_url: m.image_url,
+      })),
+      todays_set_menu: todaysSetMenu.map((m) => ({
+        id: m.id,
+        name: m.name || m.item_name,
+        description: m.description,
+        meal_type: m.meal_type,
+        diet_type: m.diet_type,
       })),
       stripe_connected: !!(merchant?.stripe_connect_account_id && merchant?.payment_account_connected && merchant?.payment_verification_status === 'verified'),
     });
