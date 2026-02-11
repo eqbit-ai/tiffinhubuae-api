@@ -67,6 +67,9 @@ model Customer {
   full_name           String
   phone_number        String?
   address             String?
+  breakfast_address   String?
+  lunch_address       String?
+  dinner_address      String?
   area                String?
   meal_type           String?
   menu_style          String?   @default("Set Menu")
