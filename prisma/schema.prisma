@@ -66,6 +66,7 @@ model Customer {
   id                  String    @id @default(cuid())
   full_name           String
   phone_number        String?
+  email               String?
   address             String?
   breakfast_address   String?
   lunch_address       String?
