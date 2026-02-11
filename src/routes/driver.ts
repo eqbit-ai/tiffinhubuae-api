@@ -118,6 +118,36 @@ router.get('/items/:batchId', driverAuthMiddleware, async (req: DriverAuthReques
   }
 });
 
+// GET /api/driver/item/:itemId — single delivery item (verified driver owns it)
+router.get('/item/:itemId', driverAuthMiddleware, async (req: DriverAuthRequest, res) => {
+  try {
+    const driver = req.driver!;
+    const itemId = req.params.itemId as string;
+
+    const item = await prisma.deliveryItem.findUnique({ where: { id: itemId } });
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const batch = await prisma.deliveryBatch.findFirst({
+      where: {
+        id: item.batch_id,
+        driver_id: driver.id,
+        created_by: driver.merchant_id,
+      },
+    });
+
+    if (!batch) {
+      return res.status(403).json({ error: 'Not authorized for this item' });
+    }
+
+    res.json(item);
+  } catch (error) {
+    console.error('[Driver Item] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch item' });
+  }
+});
+
 // PUT /api/driver/items/:itemId/deliver — mark delivered + optional photo URL + GPS
 router.put('/items/:itemId/deliver', driverAuthMiddleware, async (req: DriverAuthRequest, res) => {
   try {
