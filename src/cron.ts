@@ -21,6 +21,14 @@ export function startCronJobs() {
     } catch (error) {
       console.error('[Cron] Trial expiry check failed:', error);
     }
+
+    console.log('[Cron] Running merchant trial expiry...');
+    try {
+      const result = await runMerchantTrialExpiry();
+      console.log('[Cron] Merchant trial expiry complete:', result);
+    } catch (error) {
+      console.error('[Cron] Merchant trial expiry failed:', error);
+    }
   });
 
   // Run daily at 2 AM UAE time (10 PM UTC) - delivery photo cleanup + location cleanup
@@ -77,4 +85,19 @@ export async function runDeliveryPhotoCleanup() {
   });
 
   return { photosCleared: cleaned, totalPhotos: items.length, locationsDeleted: locationResult.count };
+}
+
+export async function runMerchantTrialExpiry() {
+  const result = await prisma.user.updateMany({
+    where: {
+      subscription_status: 'trial',
+      trial_ends_at: { lt: new Date() },
+    },
+    data: {
+      subscription_status: 'expired',
+      plan_type: 'none',
+    },
+  });
+
+  return { expired: result.count };
 }

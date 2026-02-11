@@ -152,6 +152,19 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/me
 router.get('/me', authMiddleware, async (req: AuthRequest, res) => {
   const { password_hash: _, ...safeUser } = req.user as any;
+
+  // Auto-expire merchant trial if trial_ends_at has passed
+  if (safeUser.subscription_status === 'trial' && safeUser.trial_ends_at) {
+    if (new Date() > new Date(safeUser.trial_ends_at)) {
+      await prisma.user.update({
+        where: { id: safeUser.id },
+        data: { subscription_status: 'expired', plan_type: 'none' },
+      });
+      safeUser.subscription_status = 'expired';
+      safeUser.plan_type = 'none';
+    }
+  }
+
   if (safeUser.created_at) safeUser.created_date = safeUser.created_at;
   if (safeUser.updated_at) safeUser.updated_date = safeUser.updated_at;
   safeUser.whatsapp_limit = Math.max(safeUser.whatsapp_limit || 400, 400);
