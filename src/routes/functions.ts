@@ -1,10 +1,13 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly } from '../middleware/auth';
 import { sendEmail } from '../services/email';
 import { sendSMS } from '../services/sms';
 import { sendMerchantWhatsApp } from '../services/whatsapp';
 import { stripe, STRIPE_PREMIUM_PRICE_ID } from '../services/stripe';
+import { sendPushToUser, sendPushToUserByEmail } from '../services/pushNotification';
+import { uploadToCloudinary } from '../lib/cloudinary';
 import { addDays, format } from 'date-fns';
 
 const router = Router();
@@ -1439,6 +1442,12 @@ export async function runAutoPaymentReminders() {
         });
 
         await prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
+
+        // Push notification to merchant
+        sendPushToUser(user.id, 'Payment Reminder Sent', `Reminder sent to ${customer.full_name} — ${currency.toUpperCase()} ${amount} due`, {
+          type: 'payment_reminder', customerId: customer.id,
+        }).catch(() => {});
+
         beforeCount++;
       } catch (err) {
         console.error(`[AutoReminder] Failed for customer ${customer.id}:`, err);
@@ -1516,6 +1525,12 @@ export async function runAutoPaymentReminders() {
           where: { id: customer.id },
           data: { status: 'inactive', inactive_reason: 'non_payment', active: false, reminder_after_sent: true, payment_status: 'Overdue' },
         });
+
+        // Push notification to merchant about overdue payment
+        sendPushToUser(user.id, 'Payment Overdue', `${customer.full_name} is overdue — ${currency.toUpperCase()} ${amount}. Customer deactivated.`, {
+          type: 'payment_due', customerId: customer.id,
+        }).catch(() => {});
+
         afterCount++;
       } catch (err) {
         console.error(`[AutoReminder] Overdue failed for customer ${customer.id}:`, err);
@@ -1655,6 +1670,11 @@ export async function runTrialExpiryCheck() {
         }).catch(err => console.error(`[TrialExpiry Email] Failed for merchant ${user.email}:`, err));
       }
 
+      // Push notification to merchant about trial expiry
+      sendPushToUser(user.id, 'Trial Ended', `${customer.full_name}'s trial has expired. Follow up to convert.`, {
+        type: 'trial_expiry', customerId: customer.id,
+      }).catch(() => {});
+
       sentCount++;
     } catch (err) {
       console.error(`[TrialExpiry] Failed for customer ${customer.id}:`, err);
@@ -1781,6 +1801,7 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
 
     const origin = process.env.FRONTEND_URL || 'http://localhost:5173';
     const portalUrl = `${origin}/portal/login?merchant=${user.id}`;
+    const appLink = `tiffinhub://portal/login/${user.id}`;
 
     // Send portal link via WhatsApp if customer has phone
     let whatsappSent = false;
@@ -1788,7 +1809,7 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
       try {
         await sendMerchantWhatsApp(user.id, {
           to: customer.phone_number,
-          message: `Hello ${customer.full_name}!\n\nHere is your customer portal link:\n${portalUrl}\n\nYou can view your subscription, skip dates, and manage your account.\n\nThank you!`,
+          message: `Hello ${customer.full_name}!\n\nHere is your customer portal link:\n${portalUrl}\n\nHave our app? Open directly:\n${appLink}\n\nYou can view your subscription, skip dates, and manage your account.\n\nThank you!`,
           templateName: 'PORTAL_LINK',
           contentVariables: { 'name': customer.full_name || 'Customer', 'customer portal': portalUrl },
         });
@@ -2142,6 +2163,70 @@ router.post('/auto-deduct-on-delivery', async (req: AuthRequest, res) => {
     res.json({ success: true, deductions });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Share Driver Access ─────────────────────────────────────
+router.post('/share-driver-access', async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+    const { driverId } = req.body;
+
+    const driver = await prisma.driver.findFirst({
+      where: { id: driverId, created_by: user.id },
+    });
+    if (!driver) return res.status(404).json({ error: 'Driver not found' });
+    if (!driver.phone) return res.status(400).json({ error: 'Driver has no phone number' });
+    if (!driver.access_code) return res.status(400).json({ error: 'Driver has no access code. Please generate one first.' });
+
+    const appLink = 'tiffinhub://driver/login';
+
+    let whatsappSent = false;
+    try {
+      await sendMerchantWhatsApp(user.id, {
+        to: driver.phone,
+        message: `Hello ${driver.name}!\n\nYour driver access code is: ${driver.access_code}\n\nOpen the TiffinHub app and enter this code to view your deliveries.\n\n${appLink}`,
+      });
+      whatsappSent = true;
+    } catch (e: any) {
+      console.error('[Functions] Driver access WhatsApp send failed:', e.message);
+    }
+
+    res.json({ success: true, whatsappSent });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Menu Image Upload ──────────────────────────────────────────
+const menuImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  },
+});
+
+router.post('/upload-menu-image', menuImageUpload.single('image'), async (req: AuthRequest, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image uploaded' });
+    }
+
+    const url = await uploadToCloudinary(
+      req.file.buffer,
+      'tiffinhub/menu',
+      `menu-${Date.now()}`
+    );
+
+    res.json({ url });
+  } catch (error: any) {
+    console.error('[Menu Image Upload] Error:', error);
+    res.status(500).json({ error: error.message || 'Failed to upload image' });
   }
 });
 

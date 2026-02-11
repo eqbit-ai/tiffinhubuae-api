@@ -133,6 +133,7 @@ const entityConfig: Record<string, {
   prep_items: { model: () => prisma.prepItem, ownerField: 'created_by', ownerValue: 'id' },
   chat_messages: { model: () => prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
   one_time_orders: { model: () => prisma.oneTimeOrder, ownerField: 'created_by', ownerValue: 'id' },
+  device_tokens: { model: () => prisma.deviceToken, ownerField: 'user_id', ownerValue: 'id' },
   system_logs: { model: () => prisma.systemLog, ownerField: 'created_by', ownerValue: 'id', listAll: true },
 };
 

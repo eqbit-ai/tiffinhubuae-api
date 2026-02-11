@@ -10,6 +10,7 @@ import integrationRoutes from './routes/integrations';
 import webhookRoutes from './routes/webhooks';
 import portalRoutes from './routes/portal';
 import driverRoutes from './routes/driver';
+import notificationRoutes from './routes/notifications';
 import { startCronJobs } from './cron';
 import { prisma } from './lib/prisma';
 
@@ -46,8 +47,18 @@ const authLimiter = rateLimit({
 app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }));
 
 app.use(helmet());
+// Allow web frontend + mobile app origins
+const MOBILE_APP_ORIGINS = (process.env.MOBILE_APP_ORIGINS || '').split(',').filter(Boolean);
 app.use(cors({
-  origin: FRONTEND_URL,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+    const allowedOrigins = [FRONTEND_URL, ...MOBILE_APP_ORIGINS];
+    if (allowedOrigins.includes(origin) || origin.startsWith('exp://') || origin.startsWith('tiffinhub://')) {
+      return callback(null, true);
+    }
+    callback(null, false);
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -66,7 +77,7 @@ app.use('/api/portal/send-otp', authLimiter);
 // Static file serving for uploads (with cross-origin headers for frontend)
 app.use('/uploads', (_req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Access-Control-Allow-Origin', FRONTEND_URL);
+  res.setHeader('Access-Control-Allow-Origin', '*');
   next();
 }, express.static(path.join(__dirname, '../uploads')));
 
@@ -104,6 +115,7 @@ app.use('/api/integrations', integrationRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/portal', portalRoutes);
 app.use('/api/driver', driverRoutes);
+app.use('/api/notifications', notificationRoutes);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entityRoutes);
 

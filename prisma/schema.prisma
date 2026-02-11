@@ -566,10 +566,12 @@ model DeliveryItem {
   special_notes   String?
   status          String?  @default("pending")
   delivered_at    DateTime?
-  delivery_photo  String?
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
+  delivery_photo     String?
+  delivery_latitude  Float?
+  delivery_longitude Float?
+  notes              String?
+  created_by         String
+  created_at         DateTime @default(now())
 
   @@index([batch_id])
   @@index([created_by])
@@ -698,6 +700,40 @@ model OneTimeOrder {
 
   @@index([customer_id])
   @@index([created_by])
+}
+
+model DeviceToken {
+  id              String   @id @default(cuid())
+  expo_push_token String
+  platform        String?  @default("ios")
+  user_id         String?
+  user_email      String?
+  customer_id     String?
+  is_active       Boolean  @default(true)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([expo_push_token])
+  @@index([user_id])
+  @@index([user_email])
+  @@index([customer_id])
+}
+
+model DriverLocation {
+  id          String   @id @default(cuid())
+  driver_id   String
+  batch_id    String?
+  latitude    Float
+  longitude   Float
+  heading     Float?
+  speed       Float?
+  accuracy    Float?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([driver_id, is_active])
+  @@index([batch_id])
 }
 
 model SystemLog {
