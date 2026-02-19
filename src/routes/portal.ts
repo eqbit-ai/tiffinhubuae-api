@@ -254,6 +254,9 @@ router.get('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
         full_name: customer.full_name,
         phone_number: customer.phone_number,
         address: customer.address,
+        breakfast_address: customer.breakfast_address,
+        lunch_address: customer.lunch_address,
+        dinner_address: customer.dinner_address,
         area: customer.area,
         meal_type: customer.meal_type,
         payment_amount: customer.payment_amount,
@@ -293,7 +296,7 @@ router.put('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
     const customer = req.customer!;
 
     // Whitelist of allowed fields to update
-    const allowedFields = ['address', 'area', 'roti_quantity', 'rice_type', 'dietary_preference', 'special_notes', 'skip_weekends'];
+    const allowedFields = ['address', 'breakfast_address', 'lunch_address', 'dinner_address', 'area', 'roti_quantity', 'rice_type', 'dietary_preference', 'special_notes', 'skip_weekends'];
     const updateData: any = {};
 
     for (const field of allowedFields) {
