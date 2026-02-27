@@ -40,8 +40,13 @@ model User {
   whatsapp_limit            Int       @default(400)
   whatsapp_notifications_enabled Boolean? @default(false)
   whatsapp_number           String?
-  currency                  String?   @default("AED")
+  currency                  String?   @default("USD")
   language                  String?   @default("en")
+  timezone                  String?   @default("UTC")
+  country                   String?
+  brand_primary_color       String?   @default("#6366f1")
+  brand_accent_color        String?   @default("#f97316")
+  custom_domain             String?
   reset_token               String?
   reset_token_expires       DateTime?
   is_super_admin            Boolean   @default(false)
@@ -398,7 +403,7 @@ model PaymentHistory {
   user_email           String
   subscription_id      String?
   amount               Float?   @default(0)
-  currency             String?  @default("AED")
+  currency             String?  @default("USD")
   status               String?
   payment_date         DateTime?
   stripe_payment_id    String?
@@ -414,7 +419,7 @@ model PaymentLink {
   customer_id                 String
   customer_name               String?
   amount                      Float?    @default(0)
-  currency                    String?   @default("AED")
+  currency                    String?   @default("USD")
   description                 String?
   status                      String    @default("pending")
   stripe_checkout_session_id  String?
@@ -478,7 +483,7 @@ model Invoice {
   amount          Float    @default(0)
   tax_amount      Float?   @default(0)
   total_amount    Float    @default(0)
-  currency        String?  @default("AED")
+  currency        String?  @default("USD")
   period_start    DateTime?
   period_end      DateTime?
   status          String?  @default("generated")
@@ -687,7 +692,7 @@ model OneTimeOrder {
   customer_name     String?
   items             Json     // [{menu_item_id, name, quantity, price}]
   total_amount      Float
-  currency          String   @default("AED")
+  currency          String   @default("USD")
   delivery_date     String?
   delivery_time     String?
   special_notes     String?

@@ -4,7 +4,7 @@ import { runAutoPaymentReminders, runTrialExpiryCheck } from './routes/functions
 import { deleteFromCloudinary, extractPublicId } from './lib/cloudinary';
 
 export function startCronJobs() {
-  // Run daily at 9 AM UAE time (5 AM UTC) - payment reminders & trial expiry
+  // Run daily at 5 AM UTC - payment reminders & trial expiry
   cron.schedule('0 5 * * *', async () => {
     console.log('[Cron] Running automatic payment reminders...');
     try {
@@ -31,7 +31,7 @@ export function startCronJobs() {
     }
   });
 
-  // Run daily at 2 AM UAE time (10 PM UTC) - delivery photo cleanup + location cleanup
+  // Run daily at 10 PM UTC - delivery photo cleanup + location cleanup
   cron.schedule('0 22 * * *', async () => {
     console.log('[Cron] Running delivery photo cleanup...');
     try {

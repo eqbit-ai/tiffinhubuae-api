@@ -106,7 +106,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
               data: {
                 user_email: customerOwnerEmail,
                 title: 'New Order Received',
-                message: `${order.customer_name} placed an order for ${(order.currency || 'AED')} ${order.total_amount}`,
+                message: `${order.customer_name} placed an order for ${(order.currency || 'USD')} ${order.total_amount}`,
                 type: 'order',
                 notification_type: 'info',
                 customer_id: order.customer_id,
@@ -131,7 +131,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   to: customer.phone_number,
                   message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n\nThank you!`,
                   templateName: 'ORDER_CONFIRMED',
-                  contentVariables: { 'name': customer.full_name || 'Customer', 'currency': order.currency || 'AED', 'amount': String(order.total_amount) },
+                  contentVariables: { 'name': customer.full_name || 'Customer', 'currency': order.currency || 'USD', 'amount': String(order.total_amount) },
                 });
               } catch (e: any) { console.error('[Webhook] WhatsApp send failed:', e.message); }
             }
@@ -419,7 +419,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
               user_email: userEmail,
               subscription_id: subscription.id,
               amount: 60.00,
-              currency: 'AED',
+              currency: user.currency || 'USD',
               status: 'succeeded',
               payment_date: new Date(),
               stripe_payment_id: session.payment_intent as string,

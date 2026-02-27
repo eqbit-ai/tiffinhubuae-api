@@ -230,7 +230,7 @@ router.post('/auth/verify-otp', async (req: Request, res: Response) => {
       },
       merchant: {
         business_name: merchant?.business_name || 'Tiffin Service',
-        currency: merchant?.currency || 'AED',
+        currency: merchant?.currency || 'USD',
       },
     });
   } catch (error: any) {
@@ -281,7 +281,10 @@ router.get('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
       merchant: {
         id: customer.merchant_id,
         business_name: merchant?.business_name || 'Tiffin Service',
-        currency: merchant?.currency || 'AED',
+        currency: merchant?.currency || 'USD',
+        logo_url: merchant?.logo_url || null,
+        brand_primary_color: merchant?.brand_primary_color || '#6366f1',
+        brand_accent_color: merchant?.brand_accent_color || '#f97316',
         payment_account_connected: merchant?.payment_account_connected && merchant?.payment_verification_status === 'verified',
       },
     });
@@ -1006,7 +1009,7 @@ router.get('/join/:merchantId', async (req: Request, res: Response) => {
 
     res.json({
       business_name: merchant.business_name || 'Tiffin Service',
-      currency: merchant.currency || 'AED',
+      currency: merchant.currency || 'USD',
       payment_account_connected: merchant.payment_account_connected && merchant.payment_verification_status === 'verified',
     });
   } catch (error: any) {

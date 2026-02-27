@@ -72,7 +72,7 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
         body: `<h2>Service Completed - Payment Required</h2>
           <p><strong>Customer:</strong> ${customer.full_name}</p>
           <p><strong>Days Delivered:</strong> ${newDeliveredDays} / ${paidDays}</p>
-          <p><strong>Amount Due:</strong> AED ${customer.payment_amount}</p>`,
+          <p><strong>Amount Due:</strong> ${user.currency || 'USD'} ${customer.payment_amount}</p>`,
       });
 
       return res.json({ success: true, delivered_days: newDeliveredDays, service_complete: true });
@@ -151,7 +151,7 @@ router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthReques
     if (!customer) return res.status(404).json({ error: 'Customer not found or deleted' });
     if (!customer.phone_number) return res.status(400).json({ error: 'Customer has no phone number' });
 
-    const currency = user.currency || 'AED';
+    const currency = user.currency || 'USD';
     const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\nAmount Due: ${currency} ${customer.payment_amount}\n${customer.due_date ? `Due Date: ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
 
     await sendMerchantWhatsApp(user.id, {
@@ -163,7 +163,7 @@ router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthReques
     await sendEmail({
       to: user.email,
       subject: `Payment Reminder Sent - ${customer.full_name}`,
-      body: `<h2>Payment Reminder Sent</h2><p><strong>Customer:</strong> ${customer.full_name}</p><p><strong>Amount:</strong> AED ${customer.payment_amount}</p>`,
+      body: `<h2>Payment Reminder Sent</h2><p><strong>Customer:</strong> ${customer.full_name}</p><p><strong>Amount:</strong> ${currency} ${customer.payment_amount}</p>`,
     });
 
     res.json({ success: true, message: 'Payment reminder sent successfully' });
@@ -197,7 +197,7 @@ router.post('/send-bulk-payment-reminders', checkPremiumAccess, async (req: Auth
       }
 
       try {
-        const bulkCurrency = user.currency || 'AED';
+        const bulkCurrency = user.currency || 'USD';
         const message = `Payment Reminder\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in ${customer.days_remaining} days.\n\nAmount Due: ${bulkCurrency} ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you!`;
         await sendMerchantWhatsApp(user.id, {
           to: customer.phone_number,
@@ -787,7 +787,7 @@ router.post('/check-subscription-status', async (req: AuthRequest, res) => {
 // ─── Check Premium Access ─────────────────────────────────────
 router.post('/check-premium-access', async (req: AuthRequest, res) => {
   const user = req.user!;
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
+  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
   const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
   const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
   const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
@@ -799,7 +799,7 @@ router.post('/check-premium-access', async (req: AuthRequest, res) => {
 router.post('/check-plan-access', async (req: AuthRequest, res) => {
   const user = req.user!;
   const { feature } = req.body;
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
+  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
   const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
   const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
   const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
@@ -886,7 +886,7 @@ router.post('/send-customer-payment-reminder', checkPremiumAccess, async (req: A
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
     if (!customer.phone_number) return res.status(400).json({ error: 'No phone number' });
 
-    const cCurrency = user.currency || 'AED';
+    const cCurrency = user.currency || 'USD';
     const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment of ${cCurrency} ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
     const result = await sendMerchantWhatsApp(user.id, {
       to: customer.phone_number,
@@ -910,6 +910,16 @@ router.post('/send-customer-email', async (req: AuthRequest, res) => {
   try {
     const { to, subject, body } = req.body;
     if (!to || !subject || !body) return res.status(400).json({ error: 'to, subject, body required' });
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(to)) return res.status(400).json({ error: 'Invalid recipient email' });
+
+    // Verify recipient is a customer owned by the requesting merchant
+    const user = req.user!;
+    const customer = await prisma.customer.findFirst({ where: { email: to, created_by: user.id } });
+    if (!customer) return res.status(403).json({ error: 'Recipient is not your customer' });
+
     const result = await sendEmail({ to, subject, body });
     res.json(result);
   } catch (error: any) {
@@ -1066,7 +1076,7 @@ router.post('/create-customer-payment-checkout', async (req: AuthRequest, res) =
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
-          currency: 'aed',
+          currency: (user.currency || 'usd').toLowerCase(),
           product_data: { name: description || `Payment for ${customer.full_name}` },
           unit_amount: Math.round(amount * 100),
         },
@@ -1086,7 +1096,7 @@ router.post('/create-customer-payment-checkout', async (req: AuthRequest, res) =
         customer_id: customerId,
         customer_name: customer.full_name,
         amount,
-        currency: 'AED',
+        currency: user.currency || 'USD',
         description: description || `Payment for ${customer.full_name}`,
         status: 'pending',
         stripe_checkout_session_id: session.id,
@@ -1163,7 +1173,7 @@ router.post('/generate-customer-payment-link', async (req: AuthRequest, res) => 
         customer_id: customerId,
         customer_name: customer.full_name,
         amount,
-        currency: (user.currency || 'AED').toUpperCase(),
+        currency: (user.currency || 'USD').toUpperCase(),
         description: description || `Payment for ${customer.full_name}`,
         status: 'pending',
         stripe_checkout_session_id: session.id,
@@ -1180,7 +1190,7 @@ router.post('/generate-customer-payment-link', async (req: AuthRequest, res) => 
       try {
         await sendMerchantWhatsApp(user.id, {
           to: customer.phone_number,
-          message: `Hello ${customer.full_name}!\n\nHere is your payment link for ${(user.currency || 'AED').toUpperCase()} ${amount}:\n${session.url}\n\nThank you!`,
+          message: `Hello ${customer.full_name}!\n\nHere is your payment link for ${(user.currency || 'USD').toUpperCase()} ${amount}:\n${session.url}\n\nThank you!`,
         });
       } catch (e: any) { console.error('[Functions] WhatsApp send failed:', e.message); }
     }
@@ -1209,7 +1219,7 @@ router.post('/create-stripe-connect-account', async (req: AuthRequest, res) => {
       'NOK': 'NO', 'DKK': 'DK', 'CHF': 'CH', 'PLN': 'PL', 'CZK': 'CZ',
       'HUF': 'HU', 'RON': 'RO', 'BGN': 'BG', 'HRK': 'HR', 'TRY': 'TR',
     };
-    const country = currencyToCountry[(user.currency || 'AED').toUpperCase()] || 'AE';
+    const country = currencyToCountry[(user.currency || 'USD').toUpperCase()] || 'US';
 
     let accountId = user.stripe_connect_account_id;
 
@@ -1581,7 +1591,7 @@ export async function runTrialExpiryCheck() {
       if (!user) continue;
 
       // Only premium merchants can use SMS features
-      const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai') || user.is_super_admin === true;
+      const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me') || user.is_super_admin === true;
       const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
       const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
       if (!hasPremium) continue;
@@ -1618,7 +1628,7 @@ export async function runTrialExpiryCheck() {
         }
       }
 
-      const trialCurrency = ((user as any).currency || 'AED').toUpperCase();
+      const trialCurrency = ((user as any).currency || 'USD').toUpperCase();
       await sendMerchantWhatsApp(user.id, {
         to: customer.phone_number,
         message: `Hello ${customer.full_name},\n\nYour free trial has ended! We hope you enjoyed our tiffin service.\n\nTo continue without interruption, please subscribe.\n\nAmount: ${trialCurrency} ${customer.payment_amount}/month${paymentLink}\n\nThank you!`,
@@ -1962,7 +1972,7 @@ router.post('/approve-customer', async (req: AuthRequest, res) => {
               customer_id: customerId,
               customer_name: customer.full_name,
               amount,
-              currency: (user.currency || 'AED').toUpperCase(),
+              currency: (user.currency || 'USD').toUpperCase(),
               description: 'Trial conversion payment',
               status: 'pending',
               stripe_checkout_session_id: session.id,

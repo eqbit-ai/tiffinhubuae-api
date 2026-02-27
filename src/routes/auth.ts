@@ -12,7 +12,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, full_name } = req.body;
+    const { email, password, full_name, country, timezone, currency } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
@@ -64,6 +64,9 @@ router.post('/register', async (req, res) => {
         plan_type: 'trial',
         subscription_source: 'trial',
         trial_ends_at: trialEndsAt,
+        ...(country ? { country } : {}),
+        ...(timezone ? { timezone } : {}),
+        ...(currency ? { currency } : {}),
       },
     });
 
@@ -135,6 +138,11 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    // Reject deleted accounts
+    if (user.subscription_status === 'deleted') {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -178,6 +186,8 @@ router.put('/me', authMiddleware, async (req: AuthRequest, res) => {
     const allowedFields = [
       'full_name', 'phone', 'business_name', 'logo_url',
       'whatsapp_notifications_enabled', 'whatsapp_number',
+      'currency', 'language', 'timezone', 'country',
+      'brand_primary_color', 'brand_accent_color', 'custom_domain',
     ];
     const data: any = {};
     for (const field of allowedFields) {
@@ -220,16 +230,23 @@ router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) =
     const userId = req.user!.id;
     const userEmail = req.user!.email;
 
-    // Record that this email previously had an account (for trial restriction)
-    // We store it before deleting so re-signups skip trial
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        // Mark as deleted before purging — flag the email for future signups
-      },
-    });
-
     // Delete all user-owned data across all entities
+    // First: get IDs for child record cleanup
+    const userDrivers = await prisma.driver.findMany({ where: { created_by: userId }, select: { id: true } });
+    const driverIds = userDrivers.map(d => d.id);
+
+    // Delete child records (these all have created_by directly)
+    await Promise.all([
+      prisma.deliveryItem.deleteMany({ where: { created_by: userId } }),
+      prisma.containerLog.deleteMany({ where: { created_by: userId } }),
+      prisma.consumptionLog.deleteMany({ where: { created_by: userId } }),
+      prisma.prepItem.deleteMany({ where: { created_by: userId } }),
+      driverIds.length > 0
+        ? prisma.driverLocation.deleteMany({ where: { driver_id: { in: driverIds } } })
+        : Promise.resolve(),
+    ]);
+
+    // Then: delete all remaining user-owned data
     await Promise.all([
       prisma.customer.deleteMany({ where: { created_by: userId } }),
       prisma.order.deleteMany({ where: { created_by: userId } }),
@@ -242,10 +259,23 @@ router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) =
       prisma.purchase.deleteMany({ where: { created_by: userId } }),
       prisma.wastage.deleteMany({ where: { created_by: userId } }),
       prisma.paymentLink.deleteMany({ where: { created_by: userId } }),
+      prisma.invoice.deleteMany({ where: { created_by: userId } }),
+      prisma.referral.deleteMany({ where: { created_by: userId } }),
+      prisma.familyGroup.deleteMany({ where: { created_by: userId } }),
+      prisma.driver.deleteMany({ where: { created_by: userId } }),
+      prisma.deliveryBatch.deleteMany({ where: { created_by: userId } }),
+      prisma.container.deleteMany({ where: { created_by: userId } }),
+      prisma.kitchen.deleteMany({ where: { created_by: userId } }),
+      prisma.chatMessage.deleteMany({ where: { created_by: userId } }),
+      prisma.oneTimeOrder.deleteMany({ where: { created_by: userId } }),
+      prisma.mealRating.deleteMany({ where: { created_by: userId } }),
+      prisma.customerOTP.deleteMany({ where: { merchant_id: userId } }),
+      prisma.deviceToken.deleteMany({ where: { user_email: userEmail } }),
       prisma.notification.deleteMany({ where: { user_email: userEmail } }),
       prisma.supportTicket.deleteMany({ where: { user_email: userEmail } }),
       prisma.subscription.deleteMany({ where: { user_email: userEmail } }),
       prisma.paymentHistory.deleteMany({ where: { user_email: userEmail } }),
+      prisma.systemLog.deleteMany({ where: { created_by: userId } }),
     ]);
 
     // Store a deleted-account record so re-signups don't get a free trial
