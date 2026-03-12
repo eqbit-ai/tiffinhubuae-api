@@ -856,7 +856,7 @@ router.post('/list-active-plans', async (_req: AuthRequest, res) => {
         {
           id: STRIPE_PREMIUM_PRICE_ID || 'price_premium',
           unit_amount: 6999,
-          currency: 'aed',
+          currency: 'usd',
           recurring: { interval: 'month' },
           product: { name: 'Premium Plan' },
         },
@@ -1139,7 +1139,7 @@ router.post('/generate-customer-payment-link', async (req: AuthRequest, res) => 
     const feePercentage = user.fee_percentage || 3.5;
     const platformFeeAmount = Math.round((amount * feePercentage) / 100);
     const netAmount = amount - platformFeeAmount;
-    const currencyCode = (user.currency || 'aed').toLowerCase();
+    const currencyCode = (user.currency || 'usd').toLowerCase();
 
     const origin = req.headers.origin || (req.headers.referer as string)?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
     const appUrl = origin.replace(/\/$/, '');
@@ -1401,7 +1401,7 @@ export async function runAutoPaymentReminders() {
 
       try {
         const amount = customer.payment_amount;
-        const currency = (user as any).currency || 'aed';
+        const currency = (user as any).currency || 'usd';
         const feePercentage = (user as any).fee_percentage || 3.5;
         const platformFeeAmount = Math.round((amount * feePercentage) / 100);
 
@@ -1481,7 +1481,7 @@ export async function runAutoPaymentReminders() {
 
       try {
         const amount = customer.payment_amount;
-        const currency = (user as any).currency || 'aed';
+        const currency = (user as any).currency || 'usd';
         const feePercentage = (user as any).fee_percentage || 3.5;
         const platformFeeAmount = Math.round((amount * feePercentage) / 100);
 
@@ -1609,7 +1609,7 @@ export async function runTrialExpiryCheck() {
             payment_method_types: ['card'],
             line_items: [{
               price_data: {
-                currency: (user as any).currency || 'aed',
+                currency: (user as any).currency || 'usd',
                 product_data: { name: 'Tiffin Subscription - Convert from Trial' },
                 unit_amount: Math.round(amount * 100),
               },
@@ -1936,7 +1936,7 @@ router.post('/approve-customer', async (req: AuthRequest, res) => {
           const platformFeeAmount = Math.round((amount * feePercentage) / 100);
           const netAmount = amount - platformFeeAmount;
           const unitAmount = Math.round(amount * 100); // in fils/cents
-          const currencyCode = (user.currency || 'aed').toLowerCase();
+          const currencyCode = (user.currency || 'usd').toLowerCase();
 
           const origin = req.headers.origin || (req.headers.referer as string)?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
           const appUrl = origin.replace(/\/$/, '');

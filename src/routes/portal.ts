@@ -396,7 +396,7 @@ router.post('/renew', customerAuthMiddleware, async (req: CustomerAuthRequest, r
       return res.status(400).json({ error: 'Invalid payment amount' });
     }
 
-    const currency = (merchant.currency || 'aed').toLowerCase();
+    const currency = (merchant.currency || 'usd').toLowerCase();
     const feePercentage = merchant.fee_percentage || 3.5;
     const platformFeeAmount = Math.round((amount * feePercentage) / 100);
     const netAmount = amount - platformFeeAmount;
@@ -699,7 +699,7 @@ router.post('/orders', customerAuthMiddleware, async (req: CustomerAuthRequest, 
       return res.status(400).json({ error: 'Order total must be greater than 0' });
     }
 
-    const currency = (merchant.currency || 'aed').toLowerCase();
+    const currency = (merchant.currency || 'usd').toLowerCase();
 
     // Cash payment — no Stripe, no platform fee
     if (isCash) {
@@ -1064,7 +1064,7 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
     if (!isTrial && merchant.stripe_connect_account_id && merchant.payment_account_connected && merchant.payment_verification_status === 'verified') {
       const amount = req.body.payment_amount || 0;
       if (amount > 0) {
-        const currency = (merchant.currency || 'aed').toLowerCase();
+        const currency = (merchant.currency || 'usd').toLowerCase();
         const feePercentage = merchant.fee_percentage || 3.5;
         const platformFeeAmount = Math.round((amount * feePercentage) / 100);
         const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');

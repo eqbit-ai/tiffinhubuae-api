@@ -67,7 +67,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
               to: customerOwnerEmail,
               subject: `New Paid Registration - ${customer.full_name}`,
               body: `<h2>New Paid Customer Registration</h2>
-<p><strong>${customer.full_name}</strong> has registered and paid <strong>${(session.currency || 'aed').toUpperCase()} ${amount}</strong>.</p>
+<p><strong>${customer.full_name}</strong> has registered and paid <strong>${(session.currency || 'usd').toUpperCase()} ${amount}</strong>.</p>
 <p>Please approve their registration in your dashboard.</p>`,
             });
           } else {
@@ -154,7 +154,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
           if (customer) {
             const amount = session.amount_total / 100;
-            const currency = (session.currency || 'aed').toUpperCase();
+            const currency = (session.currency || 'usd').toUpperCase();
             console.log(`[Webhook] Processing renewal for ${customer.full_name} — ${currency} ${amount}`);
 
             const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
@@ -232,7 +232,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
           if (customer) {
             const amount = session.amount_total / 100;
-            const currency = (session.currency || 'aed').toUpperCase();
+            const currency = (session.currency || 'usd').toUpperCase();
             console.log(`[Webhook] Processing trial conversion for ${customer.full_name} — ${currency} ${amount}`);
 
             const newStartDate = new Date();
@@ -309,7 +309,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
           if (customer) {
             const amount = session.amount_total / 100;
-            const currency = (session.currency || 'aed').toUpperCase();
+            const currency = (session.currency || 'usd').toUpperCase();
             console.log(`[Webhook] Processing legacy payment for ${customer.full_name} — ${currency} ${amount}`);
 
             // Extend subscription by 1 month from current end_date (or from today if no end_date)
