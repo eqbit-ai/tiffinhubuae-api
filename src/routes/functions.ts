@@ -855,7 +855,7 @@ router.post('/list-active-plans', async (_req: AuthRequest, res) => {
       prices: [
         {
           id: STRIPE_PREMIUM_PRICE_ID || 'price_premium',
-          unit_amount: 6999,
+          unit_amount: 1600,
           currency: 'usd',
           recurring: { interval: 'month' },
           product: { name: 'Premium Plan' },
