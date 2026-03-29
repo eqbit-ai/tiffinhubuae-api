@@ -2,9 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 
-const JWT_SECRET: string = process.env.JWT_SECRET || 'MISSING-JWT-SECRET';
-if (process.env.JWT_SECRET === undefined) {
-  console.error('⚠️  CRITICAL: JWT_SECRET environment variable is not set! Auth will fail.');
+const JWT_SECRET: string = process.env.JWT_SECRET || 'change-me-in-production';
+if (!process.env.JWT_SECRET) {
+  console.error('⚠️  CRITICAL: JWT_SECRET environment variable is not set! Using insecure default.');
 }
 
 export interface AuthRequest extends Request {
