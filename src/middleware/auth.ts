@@ -38,8 +38,10 @@ export interface DriverAuthRequest extends Request {
   };
 }
 
-export function generateToken(userId: string): string {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+export function generateToken(userId: string, impersonatedBy?: string): string {
+  const payload: any = { userId };
+  if (impersonatedBy) payload.impersonatedBy = impersonatedBy;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: impersonatedBy ? '4h' : '30d' });
 }
 
 export function generateCustomerToken(customerId: string, merchantId: string): string {
@@ -58,11 +60,12 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
 
   const token = authHeader.slice(7);
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; impersonatedBy?: string };
     const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
+    (user as any).impersonatedBy = decoded.impersonatedBy || null;
     req.user = user as any;
     next();
   } catch {
@@ -78,6 +81,13 @@ function isUserSuperAdmin(user: AuthRequest['user']): boolean {
 export function superAdminOnly(req: AuthRequest, res: Response, next: NextFunction) {
   if (!isUserSuperAdmin(req.user)) {
     return res.status(403).json({ error: 'Forbidden: Super Admin only' });
+  }
+  next();
+}
+
+export function blockIfImpersonating(req: AuthRequest, res: Response, next: NextFunction) {
+  if ((req.user as any)?.impersonatedBy) {
+    return res.status(403).json({ error: 'This action is not allowed while impersonating a user' });
   }
   next();
 }

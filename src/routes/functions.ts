@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { prisma } from '../lib/prisma';
-import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly } from '../middleware/auth';
+import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly, blockIfImpersonating } from '../middleware/auth';
 import { sendEmail } from '../services/email';
 import { sendSMS } from '../services/sms';
 import { sendMerchantWhatsApp } from '../services/whatsapp';
@@ -218,7 +218,7 @@ router.post('/send-bulk-payment-reminders', checkPremiumAccess, async (req: Auth
 });
 
 // ─── Create Checkout Session (platform subscription) ──────────
-router.post('/create-checkout-session', async (req: AuthRequest, res) => {
+router.post('/create-checkout-session', blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const { priceId } = req.body;
@@ -249,7 +249,7 @@ router.post('/create-checkout-session', async (req: AuthRequest, res) => {
 });
 
 // ─── Cancel Subscription ─────────────────────────────────────
-router.post('/cancel-subscription', async (req: AuthRequest, res) => {
+router.post('/cancel-subscription', blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const { reason } = req.body;
@@ -1027,22 +1027,10 @@ router.post('/manage-user', superAdminOnly, async (req: AuthRequest, res) => {
   }
 });
 
-// ─── Impersonate User (Super Admin) ──────────────────────────
-router.post('/impersonate-user', superAdminOnly, async (req: AuthRequest, res) => {
-  try {
-    const { targetUserEmail } = req.body;
-    const targetUser = await prisma.user.findUnique({ where: { email: targetUserEmail } });
-    if (!targetUser) return res.status(404).json({ error: 'User not found' });
-
-    const { password_hash: _, ...safeUser } = targetUser;
-    res.json({ success: true, user: safeUser });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// Impersonate endpoint is in auth.ts — this duplicate was removed
 
 // ─── Create Customer Payment Checkout ─────────────────────────
-router.post('/create-customer-payment-checkout', async (req: AuthRequest, res) => {
+router.post('/create-customer-payment-checkout', blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
 
@@ -1115,7 +1103,7 @@ router.post('/create-customer-payment-checkout', async (req: AuthRequest, res) =
 });
 
 // ─── Generate Customer Payment Link ──────────────────────────
-router.post('/generate-customer-payment-link', async (req: AuthRequest, res) => {
+router.post('/generate-customer-payment-link', blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const { customerId, amount: reqAmount, description } = req.body;
@@ -1202,7 +1190,7 @@ router.post('/generate-customer-payment-link', async (req: AuthRequest, res) => 
 });
 
 // ─── Create Stripe Connect Account ───────────────────────────
-router.post('/create-stripe-connect-account', async (req: AuthRequest, res) => {
+router.post('/create-stripe-connect-account', blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -1306,7 +1294,7 @@ router.post('/get-stripe-account-status', async (req: AuthRequest, res) => {
 });
 
 // ─── Disconnect Payment Account ──────────────────────────────
-router.post('/disconnect-payment-account', async (req: AuthRequest, res) => {
+router.post('/disconnect-payment-account', blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     await prisma.user.update({

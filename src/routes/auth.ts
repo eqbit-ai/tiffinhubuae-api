@@ -212,10 +212,10 @@ router.post('/impersonate', authMiddleware, superAdminOnly, async (req: AuthRequ
     const targetUser = await prisma.user.findUnique({ where: { email } });
     if (!targetUser) return res.status(404).json({ error: 'User not found' });
 
-    // Audit log: who impersonated whom
-    console.log(`[IMPERSONATION] Admin ${req.user!.email} (${req.user!.id}) impersonated ${email} (${targetUser.id}) at ${new Date().toISOString()}`);
+    console.log(`[IMPERSONATION] Admin ${req.user!.email} impersonated ${email} at ${new Date().toISOString()}`);
 
-    const token = generateToken(targetUser.id);
+    // Token includes impersonatedBy — backend can block destructive actions
+    const token = generateToken(targetUser.id, req.user!.id);
     const { password_hash: _, ...safeUser } = targetUser;
     res.json({ token, user: safeUser });
   } catch (error: any) {
