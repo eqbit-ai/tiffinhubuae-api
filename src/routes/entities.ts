@@ -283,11 +283,15 @@ router.get('/:entity', authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
+    const MAX_LIMIT = 1000;
+    const take = limit ? Math.min(parseInt(limit as string) || MAX_LIMIT, MAX_LIMIT) : MAX_LIMIT;
+    const skipN = offset ? Math.max(parseInt(offset as string) || 0, 0) : 0;
+
     const results = await config.model().findMany({
       where,
       orderBy,
-      take: limit ? parseInt(limit as string) : undefined,
-      skip: offset ? parseInt(offset as string) : undefined,
+      take,
+      skip: skipN,
     });
 
     res.json(addVirtualFieldsArray(results));

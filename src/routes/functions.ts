@@ -54,7 +54,7 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
     if (newDeliveredDays >= paidDays) {
       await prisma.customer.update({
         where: { id: customerId },
-        data: { active: false, notification_sent: false },
+        data: { active: false, status: 'inactive', inactive_reason: 'service_complete', notification_sent: false },
       });
 
       if (customer.phone_number) {
@@ -2256,14 +2256,18 @@ router.post('/share-driver-access', async (req: AuthRequest, res) => {
 });
 
 // ─── Menu Image Upload ──────────────────────────────────────────
+const MENU_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
+
 const menuImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    const path = require('path');
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (file.mimetype.startsWith('image/') && MENU_IMAGE_EXTENSIONS.has(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed'));
+      cb(new Error('Only image files (jpg, png, gif, webp) are allowed'));
     }
   },
 });

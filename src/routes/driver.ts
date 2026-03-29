@@ -263,9 +263,14 @@ router.post('/location', driverAuthMiddleware, async (req: DriverAuthRequest, re
 });
 
 // GET /api/driver/location/:driverId — get latest active location (public for portal)
-router.get('/location/:driverId', async (req, res) => {
+router.get('/location/:driverId', driverAuthMiddleware, async (req: DriverAuthRequest, res) => {
   try {
     const driverId = req.params.driverId as string;
+
+    // Drivers can only see their own location; merchants handled via separate auth
+    if (req.driver && req.driver.id !== driverId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const location = await prisma.driverLocation.findFirst({
       where: { driver_id: driverId, is_active: true },

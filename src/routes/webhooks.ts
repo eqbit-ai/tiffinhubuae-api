@@ -8,11 +8,6 @@ import { addMonths, format } from 'date-fns';
 
 const router = Router();
 
-// In-memory set of recently processed event IDs (survives within a deploy, cleared on restart)
-// Primary protection: DB check via paymentLink / paymentHistory records
-const processedEventIds = new Set<string>();
-const MAX_PROCESSED_CACHE = 1000;
-
 // POST /api/webhooks/stripe
 router.post('/stripe', async (req: Request, res: Response) => {
   const signature = req.headers['stripe-signature'] as string;
@@ -29,8 +24,11 @@ router.post('/stripe', async (req: Request, res: Response) => {
   try {
     console.log(`[Webhook] Received event: ${event.type} (id: ${event.id})`);
 
-    // Idempotency check — skip if we already processed this exact event
-    if (processedEventIds.has(event.id)) {
+    // DB-backed idempotency — skip if we already processed this exact event
+    const existingLog = await prisma.systemLog.findFirst({
+      where: { log_type: 'webhook_processed', source: event.id },
+    });
+    if (existingLog) {
       console.log(`[Webhook] Duplicate event ${event.id} — skipping`);
       return res.json({ received: true, duplicate: true });
     }
@@ -719,12 +717,15 @@ router.post('/stripe', async (req: Request, res: Response) => {
       }
     }
 
-    // Mark event as processed
-    processedEventIds.add(event.id);
-    if (processedEventIds.size > MAX_PROCESSED_CACHE) {
-      const first = processedEventIds.values().next().value;
-      processedEventIds.delete(first);
-    }
+    // Mark event as processed in DB (persistent across deploys)
+    await prisma.systemLog.create({
+      data: {
+        log_type: 'webhook_processed',
+        severity: 'info',
+        source: event.id,
+        message: `Processed ${event.type}`,
+      },
+    }).catch(() => {}); // Non-critical — don't fail the webhook response
 
     console.log(`[Webhook] Successfully processed event: ${event.type}`);
     res.json({ received: true });
