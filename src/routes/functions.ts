@@ -1453,6 +1453,22 @@ export async function runAutoPaymentReminders() {
 
         await prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
 
+        // DB notification for merchant dashboard
+        await prisma.notification.create({
+          data: {
+            user_email: user.email,
+            title: 'Payment Reminder Sent',
+            message: `Auto-reminder sent to ${customer.full_name} — subscription ends today.`,
+            type: 'payment_reminder',
+            notification_type: 'Payment Reminder',
+            customer_id: customer.id,
+            customer_name: customer.full_name,
+            phone_number: customer.phone_number,
+            amount_to_collect: amount,
+            days_left: 0,
+          },
+        });
+
         // Push notification to merchant
         sendPushToUser(user.id, 'Payment Reminder Sent', `Reminder sent to ${customer.full_name} — ${currency.toUpperCase()} ${amount} due`, {
           type: 'payment_reminder', customerId: customer.id,
@@ -1534,6 +1550,22 @@ export async function runAutoPaymentReminders() {
         await prisma.customer.update({
           where: { id: customer.id },
           data: { status: 'inactive', inactive_reason: 'non_payment', active: false, reminder_after_sent: true, payment_status: 'Overdue' },
+        });
+
+        // DB notification for merchant dashboard
+        await prisma.notification.create({
+          data: {
+            user_email: user.email,
+            title: 'Payment Overdue — Customer Deactivated',
+            message: `${customer.full_name} is 3 days overdue (${currency.toUpperCase()} ${amount}). Customer has been deactivated.`,
+            type: 'payment_overdue',
+            notification_type: 'Payment Reminder',
+            customer_id: customer.id,
+            customer_name: customer.full_name,
+            phone_number: customer.phone_number,
+            amount_to_collect: amount,
+            days_left: -3,
+          },
         });
 
         // Push notification to merchant about overdue payment
@@ -1679,6 +1711,21 @@ export async function runTrialExpiryCheck() {
           `,
         }).catch(err => console.error(`[TrialExpiry Email] Failed for merchant ${user.email}:`, err));
       }
+
+      // DB notification for merchant dashboard
+      await prisma.notification.create({
+        data: {
+          user_email: user.email,
+          title: 'Trial Ended',
+          message: `${customer.full_name}'s 3-day trial has ended. Follow up to convert to paid subscription.`,
+          type: 'trial_expiry',
+          notification_type: 'info',
+          customer_id: customer.id,
+          customer_name: customer.full_name,
+          phone_number: customer.phone_number,
+          amount_to_collect: customer.payment_amount,
+        },
+      });
 
       // Push notification to merchant about trial expiry
       sendPushToUser(user.id, 'Trial Ended', `${customer.full_name}'s trial has expired. Follow up to convert.`, {
@@ -2239,5 +2286,68 @@ router.post('/upload-menu-image', menuImageUpload.single('image'), async (req: A
     res.status(500).json({ error: error.message || 'Failed to upload image' });
   }
 });
+
+// ─── Auto-Resume Paused Customers (cron) ─────────────────────────
+export async function runAutoResumePausedCustomers() {
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
+
+  // Find all customers whose pause_resume_date has passed and are still paused
+  const pausedCustomers = await prisma.customer.findMany({
+    where: {
+      is_paused: true,
+      pause_resume_date: { not: null },
+    },
+  });
+
+  // Filter to those whose resume date is today or earlier
+  const toResume = pausedCustomers.filter(c => {
+    if (!c.pause_resume_date) return false;
+    return c.pause_resume_date <= todayStr;
+  });
+
+  let resumedCount = 0;
+  for (const customer of toResume) {
+    try {
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          is_paused: false,
+          pause_start_date: null,
+          pause_resume_date: null,
+          status: 'active',
+        },
+      });
+
+      // Find the merchant to notify
+      const merchant = await prisma.user.findUnique({ where: { id: customer.created_by } });
+      if (merchant) {
+        // Create DB notification for merchant
+        await prisma.notification.create({
+          data: {
+            user_email: merchant.email,
+            title: 'Customer Auto-Resumed',
+            message: `${customer.full_name}'s pause period ended and their subscription has been automatically resumed.`,
+            type: 'resume',
+            notification_type: 'info',
+            customer_id: customer.id,
+            customer_name: customer.full_name,
+            phone_number: customer.phone_number,
+          },
+        });
+
+        // Push notification to merchant
+        sendPushToUser(merchant.id, 'Subscription Resumed', `${customer.full_name}'s pause ended — service auto-resumed`, {
+          type: 'delivery', customerId: customer.id,
+        }).catch(() => {});
+      }
+
+      resumedCount++;
+    } catch (err) {
+      console.error(`[AutoResume] Failed for customer ${customer.id}:`, err);
+    }
+  }
+
+  return { success: true, resumed: resumedCount, checked: toResume.length };
+}
 
 export default router;

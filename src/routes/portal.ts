@@ -326,7 +326,29 @@ router.put('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
     // Notify merchant about profile changes
     const merchant = await prisma.user.findUnique({ where: { id: customer.created_by } });
     if (merchant) {
+      const changedFieldsList = Object.keys(updateData).map(f => f.replace(/_/g, ' ')).join(', ');
       const changedFields = Object.keys(updateData).map(f => `<li><strong>${f.replace(/_/g, ' ')}:</strong> ${updateData[f]}</li>`).join('');
+
+      // DB notification
+      await prisma.notification.create({
+        data: {
+          user_email: merchant.email,
+          title: 'Customer Profile Updated',
+          message: `${customer.full_name} updated: ${changedFieldsList}`,
+          type: 'profile_update',
+          notification_type: 'info',
+          customer_id: customer.id,
+          customer_name: customer.full_name,
+          phone_number: customer.phone_number,
+        },
+      });
+
+      // Push notification
+      sendPushToUserByEmail(merchant.email, 'Profile Updated', `${customer.full_name} updated their profile: ${changedFieldsList}`, {
+        type: 'profile_update', customerId: customer.id,
+      }).catch(() => {});
+
+      // Email
       sendEmail({
         to: merchant.email,
         subject: `Customer Profile Updated - ${customer.full_name}`,
@@ -559,6 +581,27 @@ router.post('/resume', customerAuthMiddleware, async (req: CustomerAuthRequest, 
         status: 'active',
       },
     });
+
+    // Notify merchant about resume
+    const merchant = await prisma.user.findUnique({ where: { id: customer.created_by } });
+    if (merchant) {
+      await prisma.notification.create({
+        data: {
+          user_email: merchant.email,
+          title: 'Subscription Resumed',
+          message: `${customer.full_name} has resumed their subscription from the customer portal.`,
+          type: 'resume',
+          notification_type: 'info',
+          customer_id: customer.id,
+          customer_name: customer.full_name,
+          phone_number: customer.phone_number,
+        },
+      });
+
+      sendPushToUserByEmail(merchant.email, 'Subscription Resumed', `${customer.full_name} resumed their subscription`, {
+        type: 'delivery', customerId: customer.id,
+      }).catch(() => {});
+    }
 
     res.json({ success: true, message: 'Subscription resumed successfully' });
   } catch (error: any) {

@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { prisma } from './lib/prisma';
-import { runAutoPaymentReminders, runTrialExpiryCheck } from './routes/functions';
+import { runAutoPaymentReminders, runTrialExpiryCheck, runAutoResumePausedCustomers } from './routes/functions';
 import { deleteFromCloudinary, extractPublicId } from './lib/cloudinary';
 
 export function startCronJobs() {
@@ -28,6 +28,14 @@ export function startCronJobs() {
       console.log('[Cron] Merchant trial expiry complete:', result);
     } catch (error) {
       console.error('[Cron] Merchant trial expiry failed:', error);
+    }
+
+    console.log('[Cron] Running auto-resume for paused customers...');
+    try {
+      const result = await runAutoResumePausedCustomers();
+      console.log('[Cron] Auto-resume complete:', result);
+    } catch (error) {
+      console.error('[Cron] Auto-resume failed:', error);
     }
   });
 
