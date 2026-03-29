@@ -8,6 +8,11 @@ import { addMonths, format } from 'date-fns';
 
 const router = Router();
 
+// In-memory set of recently processed event IDs (survives within a deploy, cleared on restart)
+// Primary protection: DB check via paymentLink / paymentHistory records
+const processedEventIds = new Set<string>();
+const MAX_PROCESSED_CACHE = 1000;
+
 // POST /api/webhooks/stripe
 router.post('/stripe', async (req: Request, res: Response) => {
   const signature = req.headers['stripe-signature'] as string;
@@ -23,6 +28,12 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
   try {
     console.log(`[Webhook] Received event: ${event.type} (id: ${event.id})`);
+
+    // Idempotency check — skip if we already processed this exact event
+    if (processedEventIds.has(event.id)) {
+      console.log(`[Webhook] Duplicate event ${event.id} — skipping`);
+      return res.json({ received: true, duplicate: true });
+    }
 
     switch (event.type) {
       case 'checkout.session.completed': {
@@ -157,8 +168,18 @@ router.post('/stripe', async (req: Request, res: Response) => {
             const currency = (session.currency || 'usd').toUpperCase();
             console.log(`[Webhook] Processing renewal for ${customer.full_name} — ${currency} ${amount}`);
 
+            // Idempotency: skip if already paid for this session
+            const existingPayment = await prisma.paymentLink.findFirst({
+              where: { stripe_checkout_session_id: session.id, status: 'paid' },
+            });
+            if (existingPayment) {
+              console.log(`[Webhook] Renewal already processed for session ${session.id} — skipping`);
+              break;
+            }
+
             const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
             const newEndDate = addMonths(baseDate, 1);
+            const newDaysRemaining = Math.max(Math.ceil((newEndDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)), 0);
 
             await prisma.customer.update({
               where: { id: customer.id },
@@ -174,8 +195,8 @@ router.post('/stripe', async (req: Request, res: Response) => {
                 reminder_after_sent: false,
                 end_date: newEndDate,
                 due_date: newEndDate,
-                paid_days: (customer.paid_days || 0) + 30,
-                days_remaining: (customer.days_remaining || 0) + 30,
+                paid_days: 30,
+                days_remaining: newDaysRemaining,
               },
             });
 
@@ -201,7 +222,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
 <p><strong>Valid until:</strong> ${endFormatted}</p>`,
             });
 
-            // Update payment link
+            // Update payment link — mark as paid
             const paymentLinks = await prisma.paymentLink.findMany({
               where: { customer_id: customerId, created_by: ownerUser.id, stripe_checkout_session_id: session.id },
             });
@@ -383,6 +404,16 @@ router.post('/stripe', async (req: Request, res: Response) => {
             : session.subscription?.id;
           console.log(`[Webhook] Platform subscription — userEmail: ${userEmail}, subscriptionId: ${sessionSubscriptionId}`);
           if (!sessionSubscriptionId) { console.log('[Webhook] No subscription ID found on checkout session'); break; }
+
+          // Idempotency: check if we already recorded this payment
+          const existingHistory = await prisma.paymentHistory.findFirst({
+            where: { stripe_payment_id: session.payment_intent as string },
+          });
+          if (existingHistory) {
+            console.log(`[Webhook] Platform subscription already processed for payment_intent ${session.payment_intent} — skipping`);
+            break;
+          }
+
           const subscription = await stripe.subscriptions.retrieve(sessionSubscriptionId);
 
           const user = await prisma.user.findUnique({ where: { email: userEmail } });
@@ -475,6 +506,12 @@ router.post('/stripe', async (req: Request, res: Response) => {
                 where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
               });
               if (customer) {
+                // Idempotency: skip if customer was already paid and last_payment matches this invoice
+                if (customer.payment_status === 'Paid' && customer.last_payment_amount === invoice.amount_paid / 100) {
+                  console.log(`[Webhook] Invoice payment already processed for customer ${customer.id} — skipping`);
+                  break;
+                }
+
                 const amount = invoice.amount_paid / 100;
                 const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
                 const newEndDate = addMonths(baseDate, 1);
@@ -680,6 +717,13 @@ router.post('/stripe', async (req: Request, res: Response) => {
         }
         break;
       }
+    }
+
+    // Mark event as processed
+    processedEventIds.add(event.id);
+    if (processedEventIds.size > MAX_PROCESSED_CACHE) {
+      const first = processedEventIds.values().next().value;
+      processedEventIds.delete(first);
     }
 
     console.log(`[Webhook] Successfully processed event: ${event.type}`);
