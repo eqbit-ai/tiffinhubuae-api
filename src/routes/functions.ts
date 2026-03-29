@@ -2262,8 +2262,8 @@ const menuImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const path = require('path');
-    const ext = path.extname(file.originalname).toLowerCase();
+    const dotIdx = file.originalname.lastIndexOf('.');
+    const ext = dotIdx >= 0 ? file.originalname.slice(dotIdx).toLowerCase() : '';
     if (file.mimetype.startsWith('image/') && MENU_IMAGE_EXTENSIONS.has(ext)) {
       cb(null, true);
     } else {
