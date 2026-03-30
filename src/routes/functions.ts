@@ -1591,13 +1591,14 @@ export async function runTrialExpiryCheck() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  // Find trial customers expiring today or already expired
+  // Only expire trials whose end date is strictly BEFORE today (not today itself)
+  // A trial ending on 31/03 should remain active the entire day of 31/03
   const expiringTrials = await prisma.customer.findMany({
     where: {
       is_trial: true,
       trial_converted: { not: true },
       active: true,
-      trial_end_date: { lte: new Date() },
+      trial_end_date: { lt: today },
       phone_number: { not: null },
     },
   });
