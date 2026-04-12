@@ -637,11 +637,14 @@ router.post('/stripe', async (req: Request, res: Response) => {
             });
 
             const user = await prisma.user.findUnique({ where: { email: sub.user_email } });
-            if (user) {
+            // Only downgrade user if this failed subscription is their current one
+            if (user && user.stripe_subscription_id === invoiceSubId) {
               await prisma.user.update({
                 where: { id: user.id },
                 data: { subscription_status: 'past_due', is_paid: false, last_payment_status: 'failed' },
               });
+            } else if (user) {
+              console.log(`[Webhook] Skipping user downgrade — failed sub ${invoiceSubId} != user's current sub ${user.stripe_subscription_id}`);
             }
 
             await sendEmail({
@@ -672,16 +675,21 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
           const user = await prisma.user.findUnique({ where: { email: sub.user_email } });
           if (user && user.subscription_source !== 'admin') {
-            await prisma.user.update({
-              where: { id: user.id },
-              data: {
-                subscription_status: subscription.status,
-                plan_type: 'premium',
-                is_paid: subscription.status === 'active',
-                current_period_end: new Date(subscription.current_period_end * 1000),
-                subscription_ends_at: new Date(subscription.current_period_end * 1000),
-              },
-            });
+            // Only update user if this subscription is their current one — don't let old/stale subscriptions override
+            if (user.stripe_subscription_id !== subscription.id) {
+              console.log(`[Webhook] Skipping user update — subscription ${subscription.id} != user's current sub ${user.stripe_subscription_id}`);
+            } else {
+              await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                  subscription_status: subscription.status,
+                  plan_type: 'premium',
+                  is_paid: subscription.status === 'active',
+                  current_period_end: new Date(subscription.current_period_end * 1000),
+                  subscription_ends_at: new Date(subscription.current_period_end * 1000),
+                },
+              });
+            }
           }
         }
         break;
