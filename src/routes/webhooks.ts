@@ -546,12 +546,14 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
           if (subs.length > 0) {
             const sub = subs[0];
+            const renewalPeriodEnd = subscription.current_period_end
+              ? new Date(subscription.current_period_end * 1000)
+              : null;
             await prisma.subscription.update({
               where: { id: sub.id },
               data: {
                 status: 'active',
-                next_billing_date: new Date(subscription.current_period_end * 1000),
-                current_period_end: new Date(subscription.current_period_end * 1000),
+                ...(renewalPeriodEnd && { next_billing_date: renewalPeriodEnd, current_period_end: renewalPeriodEnd }),
                 reminder_before_sent: false,
                 reminder_after_sent: false,
               },
@@ -577,8 +579,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   subscription_status: 'active',
                   plan_type: 'premium',
                   is_paid: true,
-                  current_period_end: new Date(subscription.current_period_end * 1000),
-                  subscription_ends_at: new Date(subscription.current_period_end * 1000),
+                  ...(renewalPeriodEnd && { current_period_end: renewalPeriodEnd, subscription_ends_at: renewalPeriodEnd }),
                   last_payment_status: 'succeeded',
                 },
               });
@@ -662,14 +663,17 @@ router.post('/stripe', async (req: Request, res: Response) => {
         console.log(`[Webhook] customer.subscription.updated — subscriptionId: ${subscription.id}, status: ${subscription.status}`);
         const subs = await prisma.subscription.findMany({ where: { stripe_subscription_id: subscription.id } });
 
+        const periodEnd = subscription.current_period_end
+          ? new Date(subscription.current_period_end * 1000)
+          : null;
+
         if (subs.length > 0) {
           const sub = subs[0];
           await prisma.subscription.update({
             where: { id: sub.id },
             data: {
               status: subscription.status,
-              next_billing_date: new Date(subscription.current_period_end * 1000),
-              current_period_end: new Date(subscription.current_period_end * 1000),
+              ...(periodEnd && { next_billing_date: periodEnd, current_period_end: periodEnd }),
             },
           });
 
@@ -685,8 +689,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   subscription_status: subscription.status,
                   plan_type: 'premium',
                   is_paid: subscription.status === 'active',
-                  current_period_end: new Date(subscription.current_period_end * 1000),
-                  subscription_ends_at: new Date(subscription.current_period_end * 1000),
+                  ...(periodEnd && { current_period_end: periodEnd, subscription_ends_at: periodEnd }),
                 },
               });
             }
