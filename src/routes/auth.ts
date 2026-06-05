@@ -176,6 +176,9 @@ router.get('/me', authMiddleware, async (req: AuthRequest, res) => {
   if (safeUser.created_at) safeUser.created_date = safeUser.created_at;
   if (safeUser.updated_at) safeUser.updated_date = safeUser.updated_at;
   safeUser.whatsapp_limit = Math.max(safeUser.whatsapp_limit || 400, 400);
+  // Expose impersonation state so the frontend can disable payment/destructive
+  // actions and show a banner (payments are blocked server-side while impersonating).
+  safeUser.is_impersonating = !!(req.user as any)?.impersonatedBy;
   res.json(safeUser);
 });
 
