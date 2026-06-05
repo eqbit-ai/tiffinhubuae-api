@@ -1012,6 +1012,49 @@ router.post('/manual-grant-access', superAdminOnly, async (req: AuthRequest, res
   }
 });
 
+// ─── Revoke User Access (Super Admin) ─────────────────────────
+router.post('/revoke-user-access', superAdminOnly, async (req: AuthRequest, res) => {
+  try {
+    const { targetUserEmail, reason } = req.body;
+    if (!targetUserEmail) {
+      return res.status(400).json({ error: 'targetUserEmail is required' });
+    }
+
+    const targetUser = await prisma.user.findUnique({ where: { email: targetUserEmail } });
+    if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+    // Don't allow revoking another super admin (or the configured super admin email).
+    const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
+    if (targetUser.is_super_admin || targetUser.email === SUPER_ADMIN_EMAIL) {
+      return res.status(403).json({ error: 'Cannot revoke access for a super admin account' });
+    }
+
+    // Reverse any admin grant / trial / paid status so the app blocks access.
+    // checkActiveSubscription blocks on subscription_status 'expired'/'cancelled',
+    // and special_access_type bypasses it — so clear that too.
+    await prisma.user.update({
+      where: { id: targetUser.id },
+      data: {
+        subscription_status: 'expired',
+        plan_type: 'none',
+        subscription_source: 'admin',
+        is_paid: false,
+        special_access_type: 'none',
+        trial_ends_at: null,
+        trial_cancelled_at: new Date(),
+        current_period_end: null,
+        subscription_ends_at: null,
+        last_payment_status: reason ? `admin_revoked: ${String(reason).slice(0, 200)}` : 'admin_revoked',
+      },
+    });
+
+    console.log(`[ACCESS REVOKED] Admin ${req.user!.email} revoked access for ${targetUserEmail}${reason ? ` (reason: ${reason})` : ''}`);
+    res.json({ success: true, message: `Revoked access for ${targetUserEmail}` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── Manage User (Super Admin) ────────────────────────────────
 router.post('/manage-user', superAdminOnly, async (req: AuthRequest, res) => {
   try {
