@@ -25,15 +25,14 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
-    // Mobile number: validate format only if provided. Not yet required here
-    // because the live signup form does not collect it — requiring it server-side
-    // would break signups. Re-enable the required check once the form sends phone.
+    // Mobile number is required at signup (the signup form collects it).
     const phoneTrimmed = typeof phone === 'string' ? phone.trim() : '';
-    if (phoneTrimmed) {
-      const phoneDigits = phoneTrimmed.replace(/\D/g, '');
-      if (phoneDigits.length < 7 || phoneDigits.length > 15) {
-        return res.status(400).json({ error: 'Invalid mobile number' });
-      }
+    if (!phoneTrimmed) {
+      return res.status(400).json({ error: 'Mobile number is required' });
+    }
+    const phoneDigits = phoneTrimmed.replace(/\D/g, '');
+    if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+      return res.status(400).json({ error: 'Invalid mobile number' });
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
