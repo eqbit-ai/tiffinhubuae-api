@@ -352,6 +352,25 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
       data.name = data.item_name;
     }
 
+    // DeliveryItem: always snapshot the LIVE customer record so labels reflect the
+    // latest saved address. The frontend may send a stale snapshot (e.g. an address
+    // edited after the customer list was loaded); the Customer row is the source of truth.
+    if (req.params.entity === 'delivery_items' && data.customer_id) {
+      const customer = await prisma.customer.findUnique({ where: { id: data.customer_id } });
+      if (customer) {
+        const mealType = String(data.meal_type ?? customer.meal_type ?? '').toLowerCase();
+        let liveAddress = customer.address;
+        if (mealType.includes('breakfast') && customer.breakfast_address) liveAddress = customer.breakfast_address;
+        else if (mealType.includes('lunch') && customer.lunch_address) liveAddress = customer.lunch_address;
+        else if (mealType.includes('dinner') && customer.dinner_address) liveAddress = customer.dinner_address;
+
+        data.customer_name = customer.full_name;
+        data.customer_phone = customer.phone_number;
+        data.customer_address = liveAddress;
+        data.area = customer.area;
+      }
+    }
+
     const record = await config.model().create({ data });
     res.status(201).json(addVirtualFields(record));
   } catch (error: any) {
