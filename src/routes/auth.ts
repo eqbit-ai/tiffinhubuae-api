@@ -12,7 +12,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, full_name, country, timezone, currency } = req.body;
+    const { email, password, full_name, phone, country, timezone, currency } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
@@ -23,6 +23,16 @@ router.post('/register', async (req, res) => {
 
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    // Mobile number is required at signup.
+    const phoneTrimmed = typeof phone === 'string' ? phone.trim() : '';
+    if (!phoneTrimmed) {
+      return res.status(400).json({ error: 'Mobile number is required' });
+    }
+    const phoneDigits = phoneTrimmed.replace(/\D/g, '');
+    if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+      return res.status(400).json({ error: 'Invalid mobile number' });
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -36,6 +46,7 @@ router.post('/register', async (req, res) => {
         data: {
           password_hash,
           full_name: full_name || null,
+          phone: phoneTrimmed,
           subscription_status: 'expired',
           plan_type: null,
           subscription_source: null,
@@ -60,6 +71,7 @@ router.post('/register', async (req, res) => {
         email,
         password_hash,
         full_name: full_name || null,
+        phone: phoneTrimmed,
         subscription_status: 'trial',
         plan_type: 'trial',
         subscription_source: 'trial',
