@@ -358,6 +358,19 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
     if (req.params.entity === 'delivery_items' && data.customer_id) {
       const customer = await prisma.customer.findUnique({ where: { id: data.customer_id } });
       if (customer) {
+        // Honor weekend-skip: don't create a label / route stop on Sat (6) or Sun (0)
+        // for customers who have skip_weekends enabled. Uses the batch's delivery_date
+        // when available, otherwise today's date.
+        let deliveryDate = new Date();
+        if (data.batch_id) {
+          const batch = await prisma.deliveryBatch.findUnique({ where: { id: data.batch_id } });
+          if (batch?.delivery_date) deliveryDate = new Date(batch.delivery_date);
+        }
+        const day = deliveryDate.getDay();
+        if (customer.skip_weekends && (day === 0 || day === 6)) {
+          return res.status(200).json({ success: true, skipped: true, reason: 'Weekend skip enabled for this customer' });
+        }
+
         const mealType = String(data.meal_type ?? customer.meal_type ?? '').toLowerCase();
         let liveAddress = customer.address;
         if (mealType.includes('breakfast') && customer.breakfast_address) liveAddress = customer.breakfast_address;

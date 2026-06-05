@@ -38,6 +38,13 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Cannot deliver on skipped date', skipped: true });
     }
 
+    // Respect the customer's weekend-skip setting so weekends are not counted as
+    // delivered days (matches the should-deliver-today rule). 0 = Sunday, 6 = Saturday.
+    const deliveryDay = new Date(orderDate).getDay();
+    if (customer.skip_weekends && (deliveryDay === 0 || deliveryDay === 6)) {
+      return res.status(400).json({ error: 'Weekend skip enabled for this customer', skipped: true });
+    }
+
     const newDeliveredDays = (customer.delivered_days || 0) + 1;
     const paidDays = customer.paid_days || (customer.is_trial ? 3 : 30);
     const daysRemaining = paidDays - newDeliveredDays;
