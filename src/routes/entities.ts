@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, checkActiveSubscription, AuthRequest } from '../middleware/auth';
+import { isWeekendDate, todayInTimezone } from '../lib/weekend';
 
 const router = Router();
 
@@ -358,16 +359,19 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
     if (req.params.entity === 'delivery_items' && data.customer_id) {
       const customer = await prisma.customer.findUnique({ where: { id: data.customer_id } });
       if (customer) {
-        // Honor weekend-skip: don't create a label / route stop on Sat (6) or Sun (0)
-        // for customers who have skip_weekends enabled. Uses the batch's delivery_date
-        // when available, otherwise today's date.
-        let deliveryDate = new Date();
+        // Honor weekend-skip: don't create a label / route stop on Sat or Sun for
+        // customers who have skip_weekends enabled. The weekday is derived from the
+        // delivery DATE string (timezone-independent), not the server clock, so it
+        // is correct regardless of where the server runs. Order of preference for
+        // the date: the item's own delivery_date → the batch's delivery_date →
+        // today in the merchant's timezone.
+        let deliveryDateStr: string | null | undefined = data.delivery_date;
         if (data.batch_id) {
           const batch = await prisma.deliveryBatch.findUnique({ where: { id: data.batch_id } });
-          if (batch?.delivery_date) deliveryDate = new Date(batch.delivery_date);
+          if (batch?.delivery_date) deliveryDateStr = batch.delivery_date;
         }
-        const day = deliveryDate.getDay();
-        if (customer.skip_weekends && (day === 0 || day === 6)) {
+        if (!deliveryDateStr) deliveryDateStr = todayInTimezone((req.user as any)?.timezone);
+        if (customer.skip_weekends && isWeekendDate(deliveryDateStr)) {
           return res.status(200).json({ success: true, skipped: true, reason: 'Weekend skip enabled for this customer' });
         }
 
@@ -436,6 +440,20 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
         console.log(`[PUT] Access denied: ${entity}/${id} owner=${(existing as any)[config.ownerField]} user=${ownerVal}`);
         return res.status(403).json({ error: 'Access denied' });
       }
+    }
+
+    // Weekend-skip enforcement (count leak): the dashboard marks a delivery by
+    // PATCHing the customer's delivered_days / meals_delivered directly, which
+    // bypasses /record-delivery's weekend guard. So strip any INCREMENT of the
+    // delivery counters when today (in the merchant's timezone) is a weekend and
+    // the customer skips weekends — a weekend delivery must never be counted.
+    // Manual corrections (decreasing the counters) are left untouched.
+    if (entity === 'customers' && (existing as any).skip_weekends &&
+        isWeekendDate(todayInTimezone((req.user as any)?.timezone))) {
+      const b: any = req.body;
+      if (b.delivered_days != null && Number(b.delivered_days) > ((existing as any).delivered_days || 0)) delete b.delivered_days;
+      if (b.meals_delivered != null && Number(b.meals_delivered) > ((existing as any).meals_delivered || 0)) delete b.meals_delivered;
+      if (b.days_remaining != null && Number(b.days_remaining) < ((existing as any).days_remaining ?? Number.MAX_SAFE_INTEGER)) delete b.days_remaining;
     }
 
     let updateData = { ...req.body };

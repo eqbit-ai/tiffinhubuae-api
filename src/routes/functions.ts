@@ -9,6 +9,7 @@ import { stripe, STRIPE_PREMIUM_PRICE_ID } from '../services/stripe';
 import { sendPushToUser, sendPushToUserByEmail } from '../services/pushNotification';
 import { uploadToCloudinary } from '../lib/cloudinary';
 import { addDays, format } from 'date-fns';
+import { isWeekendDate } from '../lib/weekend';
 
 const router = Router();
 
@@ -39,9 +40,10 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
     }
 
     // Respect the customer's weekend-skip setting so weekends are not counted as
-    // delivered days (matches the should-deliver-today rule). 0 = Sunday, 6 = Saturday.
-    const deliveryDay = new Date(orderDate).getDay();
-    if (customer.skip_weekends && (deliveryDay === 0 || deliveryDay === 6)) {
+    // delivered days (matches the should-deliver-today rule). The weekday is read
+    // from the order DATE string itself, so it is correct regardless of the
+    // server's timezone.
+    if (customer.skip_weekends && isWeekendDate(String(orderDate))) {
       return res.status(400).json({ error: 'Weekend skip enabled for this customer', skipped: true });
     }
 
@@ -671,8 +673,7 @@ router.post('/should-deliver-today', async (req: AuthRequest, res) => {
     });
     if (skips.length > 0) return res.json({ shouldDeliver: false, reason: 'Date is skipped' });
 
-    const dayOfWeek = checkDate.getDay();
-    if (customer.skip_weekends && (dayOfWeek === 0 || dayOfWeek === 6)) {
+    if (customer.skip_weekends && isWeekendDate(String(date))) {
       return res.json({ shouldDeliver: false, reason: 'Weekend skip enabled' });
     }
 
@@ -707,8 +708,9 @@ router.post('/calculate-end-date', async (req: AuthRequest, res) => {
     while (deliveredCount < paidDays) {
       const dateStr = currentDate.toISOString().split('T')[0];
       const isSkipped = skipDates.has(dateStr);
-      const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
-      const skipWeekend = customer.skip_weekends && isWeekend;
+      // Use the same calendar date the loop formats above (UTC) to decide the
+      // weekday, so the weekend check can't drift from the server's local clock.
+      const skipWeekend = customer.skip_weekends && isWeekendDate(dateStr);
 
       if (!isSkipped && !skipWeekend) deliveredCount++;
       currentDate.setDate(currentDate.getDate() + 1);
