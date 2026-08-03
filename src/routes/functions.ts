@@ -1821,6 +1821,54 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
 });
 
 // ─── Generate Referral Code ───────────────────────────────────
+// ─── Mark a delivery round ────────────────────────────────────
+// One request per round instead of one PUT per order. A Tecom round is 74
+// orders; doing that from the client tripped the rate limiter and took ~74
+// round-trips. Tenant isolation is enforced here — created_by is taken from
+// the token, never the body.
+router.post('/mark-round', async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+    const { orderIds, status, driverName, note } = req.body as {
+      orderIds?: string[];
+      status?: string;
+      driverName?: string;
+      note?: string;
+    };
+
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ error: 'orderIds array required' });
+    }
+
+    const allowed = ['Delivered', 'Out for Delivery', 'Missed', 'Pending'];
+    if (!status || !allowed.includes(status)) {
+      return res.status(400).json({ error: `status must be one of ${allowed.join(', ')}` });
+    }
+
+    const now = new Date().toISOString();
+    const data: Record<string, any> = { delivery_status: status };
+
+    if (status === 'Delivered') {
+      data.delivery_time = now;
+      if (driverName) data.delivered_by = driverName;
+    } else if (status === 'Out for Delivery') {
+      data.out_for_delivery_time = now;
+      if (driverName) data.delivered_by = driverName;
+    }
+    // note is only meaningful for a failure, and is cleared on success
+    data.delivery_note = status === 'Missed' ? (note || null) : null;
+
+    const result = await prisma.order.updateMany({
+      where: { id: { in: orderIds }, created_by: user.id },
+      data,
+    });
+
+    res.json({ success: true, updated: result.count, status });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/approve-customer', async (req: AuthRequest, res) => {
   try {
     const user = req.user!;

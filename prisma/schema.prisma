@@ -148,6 +148,8 @@ model Order {
   out_for_delivery_time String?
   delivery_photo        String?
   delivery_time         String?
+  delivered_by          String?   // driver name for the round, recorded at mark-time
+  delivery_note         String?   // why an individual delivery failed
   items_delivered       String?
   special_instructions  String?
   amount                Float?   @default(0)
