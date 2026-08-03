@@ -282,17 +282,22 @@ router.post('/cancel-subscription', blockIfImpersonating, async (req: AuthReques
 
     const accessEndsAt = new Date(subscription.current_period_end * 1000).toISOString();
 
+    // Cancelling at period end means "stop billing me", not "cut me off now".
+    // This used to write subscription_status: 'cancelled' immediately, which both
+    // access guards read as "blocked" — so a merchant who cancelled on day 2 of a
+    // paid month lost the other 28 days they had already paid for, while the UI
+    // promised "you keep access until <date>". The status stays as Stripe reports
+    // it; customer.subscription.deleted flips it to cancelled when the period
+    // actually ends.
     await prisma.user.update({
       where: { id: user.id },
       data: {
-        subscription_status: 'cancelled',
-        plan_type: 'none',
+        subscription_status: subscription.status,
         subscription_ends_at: new Date(accessEndsAt),
         current_period_end: new Date(accessEndsAt),
         cancel_at_period_end: true,
         cancellation_reason: reason || 'No reason provided',
         cancelled_at: new Date(),
-        is_paid: false,
       },
     });
 
@@ -300,11 +305,84 @@ router.post('/cancel-subscription', blockIfImpersonating, async (req: AuthReques
     if (subs.length > 0) {
       await prisma.subscription.update({
         where: { id: subs[0].id },
-        data: { status: 'cancelled', cancelled_at: new Date(), cancel_reason: reason || 'No reason provided' },
+        data: {
+          status: subscription.status,
+          cancelled_at: new Date(),
+          cancel_reason: reason || 'No reason provided',
+        },
       });
     }
 
-    res.json({ success: true, access_until: accessEndsAt, status: 'cancelled' });
+    res.json({ success: true, access_until: accessEndsAt, status: subscription.status, cancel_at_period_end: true });
+  } catch (error: any) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// ─── Resume Subscription ─────────────────────────────────────
+/**
+ * Undo a "cancel at period end" while the period is still running. Previously
+ * the Billing page's Reactivate button only said "contact support", so a
+ * merchant who cancelled by mistake had no way back without a human.
+ */
+router.post('/resume-subscription', blockIfImpersonating, async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+
+    if (!user.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No subscription to resume' });
+    }
+    if (!user.cancel_at_period_end) {
+      return res.status(400).json({ error: 'This subscription is not scheduled to cancel' });
+    }
+
+    const subscription = await stripe.subscriptions.update(user.stripe_subscription_id, {
+      cancel_at_period_end: false,
+    });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        subscription_status: subscription.status,
+        is_paid: subscription.status === 'active',
+        cancel_at_period_end: false,
+        cancellation_reason: null,
+        cancelled_at: null,
+        ...(subscription.current_period_end && {
+          current_period_end: new Date(subscription.current_period_end * 1000),
+          subscription_ends_at: new Date(subscription.current_period_end * 1000),
+          next_billing_date: new Date(subscription.current_period_end * 1000),
+        }),
+      },
+    });
+
+    res.json({ success: true, status: subscription.status });
+  } catch (error: any) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// ─── Stripe Billing Portal ───────────────────────────────────
+/**
+ * The Billing page had an "Open Billing Portal" button that fired a toast and
+ * nothing else (the redirect was commented out), and it was super-admin-only —
+ * so no merchant had any way to update a card or download an invoice.
+ */
+router.post('/billing-portal', blockIfImpersonating, async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+
+    if (!user.stripe_customer_id) {
+      return res.status(400).json({ error: 'No billing account found. This applies to Stripe subscriptions only.' });
+    }
+
+    const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const session = await stripe.billingPortal.sessions.create({
+      customer: user.stripe_customer_id,
+      return_url: `${appUrl}/Billing`,
+    });
+
+    res.json({ url: session.url });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
   }

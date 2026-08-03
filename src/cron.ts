@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { prisma } from './lib/prisma';
 import { runAutoPaymentReminders, runTrialExpiryCheck, runAutoResumePausedCustomers } from './routes/functions';
 import { deleteFromCloudinary, extractPublicId } from './lib/cloudinary';
+import { stripe } from './services/stripe';
 
 export function startCronJobs() {
   // Run daily at 5 AM UTC - payment reminders & trial expiry
@@ -28,6 +29,14 @@ export function startCronJobs() {
       console.log('[Cron] Merchant trial expiry complete:', result);
     } catch (error) {
       console.error('[Cron] Merchant trial expiry failed:', error);
+    }
+
+    console.log('[Cron] Running subscription expiry...');
+    try {
+      const result = await runSubscriptionExpiry();
+      console.log('[Cron] Subscription expiry complete:', result);
+    } catch (error) {
+      console.error('[Cron] Subscription expiry failed:', error);
     }
 
     console.log('[Cron] Running customer days maintenance...');
@@ -187,6 +196,99 @@ export async function runCustomerDaysMaintenance() {
   }
 
   return { scanned: customers.length, daysUpdated, deactivated, remindersFlagged };
+}
+
+/**
+ * Expire subscriptions whose paid-for period has actually ended.
+ *
+ * Nothing enforced this. runMerchantTrialExpiry only ever looked at
+ * subscription_status='trial' against trial_ends_at, so an admin grant with a
+ * duration never ended — one merchant sat at 'active' five months past their
+ * subscription_ends_at, using the product for free.
+ *
+ * The rule is keyed on whether there is a Stripe subscription to ask about, NOT
+ * on subscription_source. One live merchant is source='admin' but carries a real
+ * stripe_subscription_id, and trusting the source label there would have cut off
+ * someone who is still paying. So:
+ *  - any user with a stripe_subscription_id is checked against Stripe, and only
+ *    Stripe's own answer expires them. A local date can be stale (a missed
+ *    invoice.paid webhook); Stripe cannot.
+ *  - everyone else is a manual grant, where the local end date is authoritative.
+ *
+ * A one-day grace period absorbs clock skew and webhook lag either way.
+ */
+export async function runSubscriptionExpiry() {
+  const GRACE_MS = 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - GRACE_MS);
+
+  const candidates = await prisma.user.findMany({
+    where: {
+      subscription_status: { notIn: ['expired', 'cancelled'] },
+      is_super_admin: { not: true },
+      OR: [
+        { subscription_ends_at: { lt: cutoff } },
+        { subscription_ends_at: null, current_period_end: { lt: cutoff } },
+      ],
+    },
+  });
+
+  const expire = async (user: (typeof candidates)[number], why: string) => {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { subscription_status: 'expired', plan_type: 'none', is_paid: false },
+    });
+    console.log(`[SubscriptionExpiry] expired ${user.email} (${why})`);
+  };
+
+  let expired = 0;
+  let keptStripeActive = 0;
+  let skippedSpecialAccess = 0;
+
+  for (const user of candidates) {
+    // Comped accounts are deliberate and have no end date to enforce.
+    if (user.special_access_type && user.special_access_type !== 'none') {
+      skippedSpecialAccess++;
+      continue;
+    }
+
+    if (user.stripe_subscription_id) {
+      try {
+        const sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id);
+        if (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due') {
+          // Still live at Stripe — our copy of the date was just stale. Repair it
+          // rather than cutting off someone who is paying.
+          const periodEnd = (sub as any).current_period_end
+            ? new Date((sub as any).current_period_end * 1000)
+            : null;
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              subscription_status: sub.status,
+              ...(periodEnd && {
+                current_period_end: periodEnd,
+                subscription_ends_at: periodEnd,
+                next_billing_date: periodEnd,
+              }),
+            },
+          });
+          keptStripeActive++;
+          continue;
+        }
+        await expire(user, `stripe status ${sub.status}`);
+        expired++;
+      } catch (err: any) {
+        // Can't reach Stripe or the subscription is gone — leave the account
+        // alone rather than locking out a payer on a transient API error.
+        console.error(`[SubscriptionExpiry] Stripe lookup failed for ${user.email}:`, err.message);
+      }
+      continue;
+    }
+
+    await expire(user, `${user.subscription_source || 'manual'} grant ended, no Stripe subscription`);
+    expired++;
+  }
+
+  return { scanned: candidates.length, expired, keptStripeActive, skippedSpecialAccess };
 }
 
 export async function runMerchantTrialExpiry() {

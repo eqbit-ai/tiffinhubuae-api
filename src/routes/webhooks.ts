@@ -429,18 +429,45 @@ router.post('/stripe', async (req: Request, res: Response) => {
           // Don't override admin-assigned plans
           if (user.subscription_source === 'admin') { console.log(`[Webhook] Skipping — user ${userEmail} has admin-assigned plan`); break; }
 
+          // What Stripe actually charged. Both of these used to be a hardcoded
+          // 60.00 with the user's display currency, so every signup was recorded
+          // as "60" whatever the real amount was — the payment history a merchant
+          // sees was partly fiction.
+          const paidMinor = session.amount_total ?? subscription.items.data[0]?.price?.unit_amount ?? 0;
+          const paidAmount = paidMinor / 100;
+          const paidCurrency = (session.currency || subscription.items.data[0]?.price?.currency || 'usd').toUpperCase();
+
+          // Card details for the billing table, which showed "N/A" for everyone
+          // because nothing ever wrote them.
+          let last4: string | null = null;
+          let brand: string | null = null;
+          try {
+            const pmId = typeof subscription.default_payment_method === 'string'
+              ? subscription.default_payment_method
+              : subscription.default_payment_method?.id;
+            if (pmId) {
+              const pm = await stripe.paymentMethods.retrieve(pmId);
+              last4 = pm.card?.last4 ?? null;
+              brand = pm.card?.brand ?? null;
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Could not read payment method:', err.message);
+          }
+
           // Upsert subscription record
           const existingSubs = await prisma.subscription.findMany({ where: { user_email: userEmail } });
           const subData = {
             user_email: userEmail,
-            plan_name: 'Premium Plan',
+            plan_name: 'TiffinHub',
             status: 'active',
             subscription_start_date: new Date(subscription.current_period_start * 1000),
             next_billing_date: new Date(subscription.current_period_end * 1000),
             current_period_end: new Date(subscription.current_period_end * 1000),
-            amount: 60.00,
+            amount: paidAmount,
             stripe_customer_id: subscription.customer as string,
             stripe_subscription_id: subscription.id,
+            payment_method_last4: last4,
+            payment_method_brand: brand,
             reminder_before_sent: false,
             reminder_after_sent: false,
           };
@@ -456,11 +483,12 @@ router.post('/stripe', async (req: Request, res: Response) => {
             data: {
               user_email: userEmail,
               subscription_id: subscription.id,
-              amount: 60.00,
-              currency: user.currency || 'USD',
+              amount: paidAmount,
+              currency: paidCurrency,
               status: 'succeeded',
               payment_date: new Date(),
               stripe_payment_id: session.payment_intent as string,
+              payment_method_last4: last4,
             },
           });
 
@@ -577,6 +605,10 @@ router.post('/stripe', async (req: Request, res: Response) => {
                 status: 'succeeded',
                 payment_date: new Date(invoice.created * 1000),
                 stripe_payment_id: invoice.payment_intent,
+                payment_method_last4:
+                  (invoice as any).charge?.payment_method_details?.card?.last4 ??
+                  sub.payment_method_last4 ??
+                  null,
               },
             });
 
@@ -698,6 +730,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
                   subscription_status: subscription.status,
                   plan_type: 'premium',
                   is_paid: subscription.status === 'active',
+                  cancel_at_period_end: subscription.cancel_at_period_end === true,
                   ...(periodEnd && { current_period_end: periodEnd, subscription_ends_at: periodEnd }),
                 },
               });
@@ -723,7 +756,13 @@ router.post('/stripe', async (req: Request, res: Response) => {
           if (user && user.subscription_status !== 'cancelled') {
             await prisma.user.update({
               where: { id: user.id },
-              data: { subscription_status: 'cancelled', is_paid: false, plan_type: 'none', last_payment_status: 'cancelled' },
+              data: {
+                subscription_status: 'cancelled',
+                is_paid: false,
+                plan_type: 'none',
+                last_payment_status: 'cancelled',
+                cancel_at_period_end: false,
+              },
             });
           }
 
