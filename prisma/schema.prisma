@@ -169,6 +169,9 @@ model Order {
   @@index([created_by])
   @@index([customer_id])
   @@index([delivery_date])
+  // One order per customer, per day, per meal plan. Added after 26% of rows
+  // turned out to be duplicates from a read-then-write race in the UI.
+  @@unique([created_by, customer_id, order_date, meal_type], map: "Order_customer_date_meal_key")
 }
 
 model MenuItem {
@@ -516,6 +519,9 @@ model DeliveryBatch {
 
   @@index([created_by])
   @@index([delivery_date])
+  // One order per customer, per day, per meal plan. Added after 26% of rows
+  // turned out to be duplicates from a read-then-write race in the UI.
+  @@unique([created_by, customer_id, order_date, meal_type], map: "Order_customer_date_meal_key")
 }
 
 model DeliveryItem {

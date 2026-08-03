@@ -386,6 +386,23 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
     const record = await config.model().create({ data });
     res.status(201).json(addVirtualFields(record));
   } catch (error: any) {
+    // A duplicate order is not an error — it is the same delivery being
+    // recorded twice. Four screens created orders with a read-then-write check
+    // (filter, then create if empty), which two clicks race straight past; 26%
+    // of all order rows were duplicates before a unique constraint was added.
+    // Return the existing row so callers stay idempotent instead of failing.
+    if (error.code === 'P2002' && req.params.entity === 'orders') {
+      const existing = await config.model().findFirst({
+        where: {
+          created_by: req.user!.id,
+          customer_id: req.body.customer_id,
+          order_date: req.body.order_date,
+          meal_type: req.body.meal_type,
+        },
+      });
+      if (existing) return res.status(200).json(addVirtualFields(existing));
+    }
+
     // If it's a Prisma unknown field error, try again stripping unknown fields
     if (error.code === 'P2009' || error.message?.includes('Unknown argument') || error.message?.includes('Unknown field')) {
       try {
