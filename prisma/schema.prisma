@@ -150,6 +150,11 @@ model Order {
   delivery_time         String?
   delivered_by          String?   // driver name for the round, recorded at mark-time
   delivery_note         String?   // why an individual delivery failed
+  // A "Lunch + Dinner" customer is one Order row but two physical deliveries.
+  // delivery_status alone could not express "lunch went out, dinner has not",
+  // so each run is stamped separately and delivery_status is derived from them.
+  lunch_delivered_at    DateTime?
+  dinner_delivered_at   DateTime?
   items_delivered       String?
   special_instructions  String?
   amount                Float?   @default(0)

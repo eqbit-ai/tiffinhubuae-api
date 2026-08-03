@@ -1821,17 +1821,18 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
 });
 
 // ─── Generate Referral Code ───────────────────────────────────
-// ─── Mark a delivery round ────────────────────────────────────
-// One request per round instead of one PUT per order. A Tecom round is 74
-// orders; doing that from the client tripped the rate limiter and took ~74
-// round-trips. Tenant isolation is enforced here — created_by is taken from
-// the token, never the body.
+// ─── Mark a delivery run ──────────────────────────────────────
+// A "Lunch + Dinner" customer is one Order row but two physical deliveries, so
+// each run is stamped separately (lunch_delivered_at / dinner_delivered_at) and
+// delivery_status is derived from them. One request per run rather than one PUT
+// per order — a Tecom dinner run is ~95 orders.
 router.post('/mark-round', async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
-    const { orderIds, status, driverName, note } = req.body as {
+    const { orderIds, meal, action, driverName, note } = req.body as {
       orderIds?: string[];
-      status?: string;
+      meal?: string;
+      action?: string;
       driverName?: string;
       note?: string;
     };
@@ -1839,31 +1840,56 @@ router.post('/mark-round', async (req: AuthRequest, res) => {
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return res.status(400).json({ error: 'orderIds array required' });
     }
-
-    const allowed = ['Delivered', 'Out for Delivery', 'Missed', 'Pending'];
-    if (!status || !allowed.includes(status)) {
-      return res.status(400).json({ error: `status must be one of ${allowed.join(', ')}` });
+    if (meal !== 'Lunch' && meal !== 'Dinner') {
+      return res.status(400).json({ error: "meal must be 'Lunch' or 'Dinner'" });
+    }
+    if (!['delivered', 'undo', 'missed'].includes(action || '')) {
+      return res.status(400).json({ error: "action must be 'delivered', 'undo' or 'missed'" });
     }
 
-    const now = new Date().toISOString();
-    const data: Record<string, any> = { delivery_status: status };
+    const column = meal === 'Lunch' ? 'lunch_delivered_at' : 'dinner_delivered_at';
+    const stamp = action === 'delivered' ? new Date() : null;
 
-    if (status === 'Delivered') {
-      data.delivery_time = now;
-      if (driverName) data.delivered_by = driverName;
-    } else if (status === 'Out for Delivery') {
-      data.out_for_delivery_time = now;
-      if (driverName) data.delivered_by = driverName;
-    }
-    // note is only meaningful for a failure, and is cleared on success
-    data.delivery_note = status === 'Missed' ? (note || null) : null;
-
-    const result = await prisma.order.updateMany({
+    // Tenant isolation: created_by comes from the token, never the body.
+    const scoped = await prisma.order.findMany({
       where: { id: { in: orderIds }, created_by: user.id },
-      data,
+      select: { id: true },
+    });
+    const ids = scoped.map((o) => o.id);
+    if (ids.length === 0) return res.json({ success: true, updated: 0 });
+
+    await prisma.order.updateMany({
+      where: { id: { in: ids } },
+      data: {
+        [column]: stamp,
+        ...(driverName && action === 'delivered' ? { delivered_by: driverName } : {}),
+        delivery_note: action === 'missed' ? note || 'Not delivered' : null,
+      } as any,
     });
 
-    res.json({ success: true, updated: result.count, status });
+    // Derive delivery_status from the per-run stamps. A row is Delivered only
+    // once every run its meal_type requires has been stamped.
+    if (action === 'missed') {
+      await prisma.order.updateMany({
+        where: { id: { in: ids } },
+        data: { delivery_status: 'Missed' },
+      });
+    } else {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Order" SET "delivery_status" = CASE
+           WHEN (("meal_type" ILIKE '%lunch%') IS NOT TRUE OR "lunch_delivered_at" IS NOT NULL)
+            AND (("meal_type" ILIKE '%dinner%') IS NOT TRUE OR "dinner_delivered_at" IS NOT NULL)
+             THEN 'Delivered'
+           WHEN "lunch_delivered_at" IS NOT NULL OR "dinner_delivered_at" IS NOT NULL
+             THEN 'Out for Delivery'
+           ELSE 'Pending'
+         END
+         WHERE "id" = ANY($1::text[])`,
+        ids
+      );
+    }
+
+    res.json({ success: true, updated: ids.length, meal, action });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
