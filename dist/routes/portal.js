@@ -1,4 +1,7 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const prisma_1 = require("../lib/prisma");
@@ -8,13 +11,38 @@ const stripe_1 = require("../services/stripe");
 const whatsapp_1 = require("../services/whatsapp");
 const auth_1 = require("../middleware/auth");
 const pushNotification_1 = require("../services/pushNotification");
+const crypto_1 = __importDefault(require("crypto"));
 const router = (0, express_1.Router)();
+// Prisma validation errors name models, columns and argument types, and the
+// entity router lets a caller steer them via ?sortBy= and the where filter —
+// which turns a 500 into a free schema dump. Log the detail, return a generic
+// message.
+function safeError(error) {
+    console.error('[error]', error?.message || error);
+    return 'Something went wrong. Please try again.';
+}
+// Self-registration is public and unauthenticated, so these values are
+// attacker-controlled. Interpolated raw, a customer named
+// `<a href="...">Click to verify</a>` renders as a live link inside a
+// legitimate platform email to the merchant — a phishing hook with your own
+// branding around it.
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 // ─────────────────────────────────────────────────────────────────
 // OTP AUTHENTICATION ENDPOINTS
 // ─────────────────────────────────────────────────────────────────
 // Generate a 6-digit OTP
 function generateOTP() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    // crypto.randomInt, not Math.random: V8's PRNG state is recoverable from
+    // observed outputs, and an attacker can farm their own OTPs from a throwaway
+    // customer account on the same process to do exactly that.
+    return crypto_1.default.randomInt(100000, 1000000).toString();
 }
 // Normalize phone number: strip spaces/dashes, ensure we can match with or without '+'
 function normalizePhone(phone) {
@@ -104,7 +132,7 @@ router.post('/auth/request-otp', async (req, res) => {
         res.json({ success: true, message: 'OTP sent successfully' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/auth/verify-otp - Verify OTP and return JWT
@@ -144,11 +172,13 @@ router.post('/auth/verify-otp', async (req, res) => {
             });
         }
         else {
-            // No merchant_id — look up the OTP record by phone + code directly
+            // Look up by phone only, NOT by phone + code. Matching on the code meant
+            // a wrong guess found no row, so `attempts` was never incremented and the
+            // 5-attempt lockout below could never fire — leaving a 6-digit code
+            // guessable for its full 10-minute life. The code is compared below.
             otpRecord = await prisma_1.prisma.customerOTP.findFirst({
                 where: {
                     phone_number: { in: [cleaned, withPlus, withoutPlus] },
-                    otp_code: otp,
                     verified: false,
                     expires_at: { gt: new Date() },
                 },
@@ -203,7 +233,7 @@ router.post('/auth/verify-otp', async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─────────────────────────────────────────────────────────────────
@@ -256,7 +286,7 @@ router.get('/me', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // PUT /api/portal/me - Update customer profile (allowed fields only)
@@ -328,7 +358,7 @@ router.put('/me', auth_1.customerAuthMiddleware, async (req, res) => {
         res.json({ success: true, customer: updated });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // GET /api/portal/payments - Get payment history
@@ -353,7 +383,7 @@ router.get('/payments', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/renew - Create subscription renewal checkout
@@ -423,7 +453,7 @@ router.post('/renew', auth_1.customerAuthMiddleware, async (req, res) => {
         res.json({ success: true, checkoutUrl: session.url, amount, currency: currency.toUpperCase() });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/pause - Pause subscription
@@ -498,7 +528,7 @@ router.post('/pause', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/resume - Resume paused subscription
@@ -539,7 +569,7 @@ router.post('/resume', auth_1.customerAuthMiddleware, async (req, res) => {
         res.json({ success: true, message: 'Subscription resumed successfully' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // GET /api/portal/menu - Get merchant's active menu items
@@ -585,7 +615,7 @@ router.get('/menu', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // GET /api/portal/orders - List one-time orders
@@ -613,7 +643,7 @@ router.get('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/orders - Create one-time order with Stripe checkout
@@ -792,7 +822,7 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // GET /api/portal/skips - Get customer's skips (authenticated)
@@ -814,7 +844,7 @@ router.get('/skips', auth_1.customerAuthMiddleware, async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/skips - Create a skip (authenticated)
@@ -851,7 +881,7 @@ router.post('/skips', auth_1.customerAuthMiddleware, async (req, res) => {
         res.json({ success: true, skip: { id: skip.id, skip_date: skip.skip_date, meal_type: skip.meal_type } });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // DELETE /api/portal/skips/:skipId - Cancel a skip (authenticated)
@@ -871,7 +901,7 @@ router.delete('/skips/:skipId', auth_1.customerAuthMiddleware, async (req, res) 
         res.json({ success: true });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // GET /api/portal/driver-location — get current driver location for customer's active delivery
@@ -925,7 +955,7 @@ router.get('/driver-location', auth_1.customerAuthMiddleware, async (req, res) =
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─────────────────────────────────────────────────────────────────
@@ -944,7 +974,7 @@ router.get('/join/:merchantId', async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── POST /api/portal/join/:merchantId — Customer self-registration ───
@@ -1026,11 +1056,11 @@ router.post('/join/:merchantId', async (req, res) => {
                 to: merchant.email,
                 subject: `New Customer Registration - ${full_name}`,
                 body: `<h2>New Customer Registration</h2>
-<p><strong>${full_name}</strong> has registered via your public link.</p>
-<p><strong>Phone:</strong> ${phone_number}</p>
+<p><strong>${escapeHtml(full_name)}</strong> has registered via your public link.</p>
+<p><strong>Phone:</strong> ${escapeHtml(phone_number)}</p>
 <p><strong>Type:</strong> ${isTrial ? '3-Day Free Trial' : 'Direct Registration'}</p>
-<p><strong>Meal:</strong> ${meal_type || 'Lunch'}</p>
-${address ? `<p><strong>Address:</strong> ${address}</p>` : ''}
+<p><strong>Meal:</strong> ${escapeHtml(meal_type || 'Lunch')}</p>
+${address ? `<p><strong>Address:</strong> ${escapeHtml(address)}</p>` : ''}
 <p>Please log in to your dashboard to approve or reject this registration.</p>`,
             });
         }
@@ -1057,7 +1087,7 @@ ${address ? `<p><strong>Address:</strong> ${address}</p>` : ''}
         res.json({ success: true, customerId: customer.id, type: isTrial ? 'trial' : 'direct' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // GET /api/portal/:token - Get customer info
@@ -1130,7 +1160,7 @@ router.get('/:token', async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/portal/:token/skip - Skip a day
@@ -1169,7 +1199,7 @@ router.post('/:token/skip', async (req, res) => {
         res.json({ success: true, skip: { id: skip.id, skip_date: skip.skip_date, meal_type: skip.meal_type } });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // DELETE /api/portal/:token/skip/:skipId - Cancel a skip
@@ -1192,7 +1222,7 @@ router.delete('/:token/skip/:skipId', async (req, res) => {
         res.json({ success: true });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 exports.default = router;

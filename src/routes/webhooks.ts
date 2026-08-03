@@ -8,6 +8,15 @@ import { addMonths, format } from 'date-fns';
 
 const router = Router();
 
+// Prisma validation errors name models, columns and argument types, and the
+// entity router lets a caller steer them via ?sortBy= and the where filter —
+// which turns a 500 into a free schema dump. Log the detail, return a generic
+// message.
+function safeError(error: any): string {
+  console.error('[error]', error?.message || error);
+  return 'Something went wrong. Please try again.';
+}
+
 // POST /api/webhooks/stripe
 router.post('/stripe', async (req: Request, res: Response) => {
   const signature = req.headers['stripe-signature'] as string;
@@ -742,7 +751,7 @@ router.post('/stripe', async (req: Request, res: Response) => {
     res.json({ received: true });
   } catch (error: any) {
     console.error(`[Webhook] Error processing event ${event?.type}:`, error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 

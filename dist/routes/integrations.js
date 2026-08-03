@@ -8,8 +8,17 @@ const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const auth_1 = require("../middleware/auth");
+const prisma_1 = require("../lib/prisma");
 const email_1 = require("../services/email");
 const router = (0, express_1.Router)();
+// Prisma validation errors name models, columns and argument types, and the
+// entity router lets a caller steer them via ?sortBy= and the where filter —
+// which turns a 500 into a free schema dump. Log the detail, return a generic
+// message.
+function safeError(error) {
+    console.error('[error]', error?.message || error);
+    return 'Something went wrong. Please try again.';
+}
 router.use(auth_1.authMiddleware);
 // File upload config
 const uploadsDir = path_1.default.join(__dirname, '../../uploads');
@@ -38,17 +47,36 @@ const storage = multer_1.default.diskStorage({
 });
 const upload = (0, multer_1.default)({ storage, limits: { fileSize: 10 * 1024 * 1024 }, fileFilter });
 // POST /api/integrations/send-email
+//
+// The recipient must belong to the caller. Without this check any merchant —
+// and signup is free and instant — could send arbitrary HTML from the
+// platform's verified sender to any address: phishing other merchants from a
+// domain that passes SPF/DKIM, and a fast route to getting the domain
+// blacklisted, which would silently kill payment reminders for everyone.
+// /functions/send-customer-email already scoped its recipient this way.
 router.post('/send-email', async (req, res) => {
     try {
+        const user = req.user;
         const { to, subject, body } = req.body;
         if (!to || !subject || !body) {
             return res.status(400).json({ error: 'to, subject, body required' });
+        }
+        const recipient = String(to).trim().toLowerCase();
+        const isOwnAddress = recipient === user.email?.toLowerCase();
+        const ownsRecipient = isOwnAddress
+            ? true
+            : !!(await prisma_1.prisma.customer.findFirst({
+                where: { email: { equals: recipient, mode: 'insensitive' }, created_by: user.id, is_deleted: false },
+                select: { id: true },
+            }));
+        if (!ownsRecipient) {
+            return res.status(403).json({ error: 'Recipient must be one of your own customers' });
         }
         const result = await (0, email_1.sendEmail)({ to, subject, body });
         res.json(result);
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // POST /api/integrations/upload
@@ -60,7 +88,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         res.json({ file_url: fileUrl, filename: req.file.filename });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 exports.default = router;

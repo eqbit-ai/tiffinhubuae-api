@@ -5,6 +5,15 @@ import { isWeekendDate, todayInTimezone } from '../lib/weekend';
 
 const router = Router();
 
+// Prisma validation errors name models, columns and argument types, and the
+// entity router lets a caller steer them via ?sortBy= and the where filter —
+// which turns a 500 into a free schema dump. Log the detail, return a generic
+// message.
+function safeError(error: any): string {
+  console.error('[error]', error?.message || error);
+  return 'Something went wrong. Please try again.';
+}
+
 // Date fields that need ISO conversion per entity
 const dateFields = new Set([
   'start_date', 'end_date', 'due_date', 'last_payment_date', 'deleted_at',
@@ -104,6 +113,7 @@ const entityConfig: Record<string, {
   ownerValue: 'id' | 'email'; // whether owner field stores user id or email
   softDelete?: boolean;
   listAll?: boolean;          // if true, no tenant filter on list (e.g. notifications filter by email)
+  readOnly?: boolean;         // client may read but never write; server owns these
 }> = {
   customers: { model: () => prisma.customer, ownerField: 'created_by', ownerValue: 'id', softDelete: true },
   orders: { model: () => prisma.order, ownerField: 'created_by', ownerValue: 'id' },
@@ -117,8 +127,10 @@ const entityConfig: Record<string, {
   purchases: { model: () => prisma.purchase, ownerField: 'created_by', ownerValue: 'id' },
   wastages: { model: () => prisma.wastage, ownerField: 'created_by', ownerValue: 'id' },
   support_tickets: { model: () => prisma.supportTicket, ownerField: 'user_email', ownerValue: 'email' },
-  subscriptions: { model: () => prisma.subscription, ownerField: 'user_email', ownerValue: 'email' },
-  payment_history: { model: () => prisma.paymentHistory, ownerField: 'user_email', ownerValue: 'email' },
+  // Written only by the Stripe webhook — a client-writable billing row plus
+  // /check-subscription-status was a route to self-granting premium.
+  subscriptions: { model: () => prisma.subscription, ownerField: 'user_email', ownerValue: 'email', readOnly: true },
+  payment_history: { model: () => prisma.paymentHistory, ownerField: 'user_email', ownerValue: 'email', readOnly: true },
   payment_links: { model: () => prisma.paymentLink, ownerField: 'created_by', ownerValue: 'id' },
   consumption_logs: { model: () => prisma.consumptionLog, ownerField: 'created_by', ownerValue: 'id' },
   invoices: { model: () => prisma.invoice, ownerField: 'created_by', ownerValue: 'id' },
@@ -130,7 +142,9 @@ const entityConfig: Record<string, {
   chat_messages: { model: () => prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
   one_time_orders: { model: () => prisma.oneTimeOrder, ownerField: 'created_by', ownerValue: 'id' },
   device_tokens: { model: () => prisma.deviceToken, ownerField: 'user_id', ownerValue: 'id' },
-  system_logs: { model: () => prisma.systemLog, ownerField: 'created_by', ownerValue: 'id', listAll: true },
+  // Server-written only: the webhook uses this table for idempotency, so
+  // client writes allowed log injection and flooding.
+  system_logs: { model: () => prisma.systemLog, ownerField: 'created_by', ownerValue: 'id', listAll: true, readOnly: true },
 };
 
 // Helper to build where clause with tenant isolation
@@ -190,7 +204,7 @@ router.get('/admin/users', authMiddleware, async (req: AuthRequest, res) => {
     });
     res.json(addVirtualFieldsArray(users));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -217,7 +231,7 @@ router.put('/admin/users/:id', authMiddleware, async (req: AuthRequest, res) => 
     const { password_hash: _, ...safeUser } = user;
     res.json(safeUser);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -292,7 +306,7 @@ router.get('/:entity', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(addVirtualFieldsArray(results));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -315,7 +329,7 @@ router.get('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(addVirtualFields(record));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -323,12 +337,25 @@ router.get('/:entity/:id', authMiddleware, async (req: AuthRequest, res) => {
 router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: AuthRequest, res) => {
   const config = entityConfig[req.params.entity as string];
   if (!config) return res.status(404).json({ error: 'Unknown entity' });
+  if (config.readOnly) return res.status(403).json({ error: 'This record is managed by the server' });
 
   try {
     const data = { ...req.body };
 
     // Remove id if provided (auto-generated)
     delete data.id;
+
+    // Driver access codes are the credential for the /driver app, so the server
+    // mints them: 8 chars from a CSPRNG rather than 6 from Math.random() in the
+    // browser. A guessed code authenticates against whichever tenant owns it,
+    // since the lookup searches all merchants.
+    if (req.params.entity === 'drivers') {
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no look-alikes
+      const bytes = require('crypto').randomBytes(8);
+      data.access_code = Array.from(bytes as Buffer)
+        .map((b: number) => alphabet[b % alphabet.length])
+        .join('');
+    }
 
     // Auto-set owner field
     if (config.ownerField) {
@@ -352,7 +379,11 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
     // latest saved address. The frontend may send a stale snapshot (e.g. an address
     // edited after the customer list was loaded); the Customer row is the source of truth.
     if (req.params.entity === 'delivery_items' && data.customer_id) {
-      const customer = await prisma.customer.findUnique({ where: { id: data.customer_id } });
+      // Scoped to the caller: unscoped, posting another merchant's customer_id
+      // returned that customer's name, phone, address and area in the response.
+      const customer = await prisma.customer.findFirst({
+        where: { id: data.customer_id, created_by: req.user!.id },
+      });
       if (customer) {
         // Honor weekend-skip: don't create a label / route stop on Sat or Sun for
         // customers who have skip_weekends enabled. The weekday is derived from the
@@ -422,7 +453,7 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
         return res.status(201).json(addVirtualFields(record));
       } catch {}
     }
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -437,6 +468,7 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
     console.log(`[PUT] Unknown entity: ${entity}`);
     return res.status(404).json({ error: 'Unknown entity' });
   }
+  if (config.readOnly) return res.status(403).json({ error: 'This record is managed by the server' });
 
   try {
     const existing = await config.model().findUnique({ where: { id } });
@@ -505,7 +537,7 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
     res.json(addVirtualFields(record));
   } catch (error: any) {
     console.error(`[PUT] ✗ ${entity}/${id} error:`, error.message?.slice(0, 300));
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -537,7 +569,7 @@ router.delete('/:entity/:id', authMiddleware, checkActiveSubscription, async (re
 
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 

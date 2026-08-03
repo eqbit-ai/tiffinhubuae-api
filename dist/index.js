@@ -18,6 +18,7 @@ const driver_1 = __importDefault(require("./routes/driver"));
 const notifications_1 = __importDefault(require("./routes/notifications"));
 const cron_1 = require("./cron");
 const prisma_1 = require("./lib/prisma");
+const auth_2 = require("./middleware/auth");
 // --- JWT_SECRET startup validation ---
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret || jwtSecret === 'change-me-in-production') {
@@ -46,6 +47,9 @@ const authLimiter = (0, express_rate_limit_1.default)({
 // Stripe webhooks need raw body
 app.use('/api/webhooks/stripe', express_1.default.raw({ type: 'application/json' }));
 app.use((0, helmet_1.default)());
+// The password-reset link necessarily carries its token in the URL; a strict
+// referrer policy stops that URL being sent on to any other origin.
+app.use(helmet_1.default.referrerPolicy({ policy: 'strict-origin-when-cross-origin' }));
 // Allow web frontend + mobile app origins
 const MOBILE_APP_ORIGINS = (process.env.MOBILE_APP_ORIGINS || '').split(',').filter(Boolean);
 app.use((0, cors_1.default)({
@@ -61,7 +65,8 @@ app.use((0, cors_1.default)({
     },
     credentials: true,
 }));
-app.use(express_1.default.json({ limit: '10mb' }));
+app.use(express_1.default.json({ limit: '1mb' }));
+app.use(express_1.default.urlencoded({ extended: true, limit: '1mb' }));
 // Apply general rate limiter to all routes
 app.use(generalLimiter);
 // Apply strict rate limiter to auth endpoints
@@ -70,7 +75,22 @@ app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/driver/auth', authLimiter);
-app.use('/api/portal/send-otp', authLimiter);
+// These are the real portal auth paths; '/api/portal/send-otp' does not exist,
+// so the strict limiter was never applied to OTP request or verification.
+// Public self-registration: unauthenticated and reachable by anyone holding a
+// join link (which is public by design). Without a tight limit, one script can
+// create thousands of pending customers, each firing an email, a DB
+// notification and a push to the merchant.
+const joinLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    message: { error: 'Too many registrations from this address. Please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use('/api/portal/join', joinLimiter);
+app.use('/api/portal/auth/request-otp', authLimiter);
+app.use('/api/portal/auth/verify-otp', authLimiter);
 // Static file serving for uploads (with cross-origin headers for frontend)
 app.use('/uploads', (_req, res, next) => {
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -80,7 +100,20 @@ app.use('/uploads', (_req, res, next) => {
 // Track server start time for uptime calculation
 const serverStartTime = Date.now();
 // Health check with real metrics (before auth-gated routes)
+// Unauthenticated: report liveness only. This used to return the Node version,
+// RSS/heap and uptime to anyone who asked, which is free reconnaissance.
 app.get('/api/health', async (_req, res) => {
+    let ok = true;
+    try {
+        await prisma_1.prisma.$queryRaw `SELECT 1`;
+    }
+    catch {
+        ok = false;
+    }
+    return res.status(ok ? 200 : 503).json({ status: ok ? 'ok' : 'degraded' });
+});
+// Detailed metrics stay available, but behind auth.
+app.get('/api/health/detail', auth_2.authMiddleware, async (_req, res) => {
     const mem = process.memoryUsage();
     let dbStatus = 'ok';
     try {

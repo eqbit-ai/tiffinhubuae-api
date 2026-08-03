@@ -18,6 +18,14 @@ const cloudinary_1 = require("../lib/cloudinary");
 const date_fns_1 = require("date-fns");
 const weekend_1 = require("../lib/weekend");
 const router = (0, express_1.Router)();
+// Prisma validation errors name models, columns and argument types, and the
+// entity router lets a caller steer them via ?sortBy= and the where filter —
+// which turns a 500 into a free schema dump. Log the detail, return a generic
+// message.
+function safeError(error) {
+    console.error('[error]', error?.message || error);
+    return 'Something went wrong. Please try again.';
+}
 // All routes require auth
 router.use(auth_1.authMiddleware);
 // ─── Record Delivery ──────────────────────────────────────────
@@ -85,7 +93,7 @@ router.post('/record-delivery', async (req, res) => {
         res.json({ success: true, delivered_days: newDeliveredDays, days_remaining: daysRemaining });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Send WhatsApp Message ────────────────────────────────────
@@ -133,7 +141,7 @@ router.post('/send-whatsapp-message', auth_1.checkPremiumAccess, async (req, res
         res.json({ ...result, to, whatsapp_sent_count: updated?.whatsapp_sent_count || 0, whatsapp_limit: Math.max(updated?.whatsapp_limit || 400, 400) });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Send Payment Reminder ────────────────────────────────────
@@ -166,7 +174,7 @@ router.post('/send-payment-reminder', auth_1.checkPremiumAccess, async (req, res
         res.json({ success: true, message: 'Payment reminder sent successfully' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Send Bulk Payment Reminders ──────────────────────────────
@@ -206,7 +214,7 @@ router.post('/send-bulk-payment-reminders', auth_1.checkPremiumAccess, async (re
         res.json({ sent: sentCount, skipped: skipped.length, total: customers.length, errors: errors.length > 0 ? errors : undefined });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Create Checkout Session (platform subscription) ──────────
@@ -234,7 +242,7 @@ router.post('/create-checkout-session', auth_1.blockIfImpersonating, async (req,
         res.json({ url: session.url });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Cancel Subscription ─────────────────────────────────────
@@ -272,7 +280,7 @@ router.post('/cancel-subscription', auth_1.blockIfImpersonating, async (req, res
         res.json({ success: true, access_until: accessEndsAt, status: 'cancelled' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Check Low Stock ──────────────────────────────────────────
@@ -297,7 +305,7 @@ router.post('/check-low-stock', auth_1.checkPremiumAccess, async (req, res) => {
         res.json({ success: true, critical_count: criticalStock.length, critical_items: criticalStock });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Batch Cooking ────────────────────────────────────────────
@@ -348,7 +356,7 @@ router.post('/batch-cooking', async (req, res) => {
         res.json({ success: true, batch_details: { meal_type, quantity, total_cost: totalCost, cost_per_meal: totalCost / quantity }, deductions });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Apply Tiffin Carry Forward ───────────────────────────────
@@ -396,7 +404,7 @@ router.post('/apply-tiffin-carry-forward', async (req, res) => {
         res.json({ success: true, processed: processedCount, totalDaysApplied });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Delete Customer (soft) ──────────────────────────────────
@@ -430,7 +438,7 @@ router.post('/delete-customer', async (req, res) => {
         res.json({ success: true, message: 'Customer deleted successfully', customerId });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Clear Deleted Customers (hard delete) ────────────────────
@@ -443,7 +451,7 @@ router.post('/clear-deleted-customers', async (req, res) => {
         res.json({ success: true, deleted: result.count });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Add Purchase ─────────────────────────────────────────────
@@ -453,12 +461,12 @@ router.post('/add-purchase', auth_1.checkPremiumAccess, async (req, res) => {
         const { ingredient_id, quantity, cost_per_unit, supplier_id, purchase_date, expiry_date, notes } = req.body;
         if (!ingredient_id || !quantity)
             return res.status(400).json({ error: 'ingredient_id and quantity required' });
-        const ingredient = await prisma_1.prisma.ingredient.findUnique({ where: { id: ingredient_id } });
+        const ingredient = await prisma_1.prisma.ingredient.findFirst({ where: { id: ingredient_id, created_by: user.id } });
         if (!ingredient)
             return res.status(404).json({ error: 'Ingredient not found' });
         let supplier_name = null;
         if (supplier_id) {
-            const supplier = await prisma_1.prisma.supplier.findUnique({ where: { id: supplier_id } });
+            const supplier = await prisma_1.prisma.supplier.findFirst({ where: { id: supplier_id, created_by: user.id } });
             supplier_name = supplier?.name || null;
         }
         const effectiveCost = cost_per_unit || ingredient.cost_per_unit || 0;
@@ -492,7 +500,7 @@ router.post('/add-purchase', auth_1.checkPremiumAccess, async (req, res) => {
         res.json({ success: true, purchase, message: `Added ${quantity} ${ingredient.unit} of ${ingredient.name} to stock` });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Add Wastage ──────────────────────────────────────────────
@@ -503,7 +511,7 @@ router.post('/add-wastage', auth_1.checkPremiumAccess, async (req, res) => {
         if (!ingredient_id || !quantity || !reason) {
             return res.status(400).json({ error: 'ingredient_id, quantity, and reason required' });
         }
-        const ingredient = await prisma_1.prisma.ingredient.findUnique({ where: { id: ingredient_id } });
+        const ingredient = await prisma_1.prisma.ingredient.findFirst({ where: { id: ingredient_id, created_by: user.id } });
         if (!ingredient)
             return res.status(404).json({ error: 'Ingredient not found' });
         const costValue = quantity * (ingredient.cost_per_unit || 0);
@@ -532,7 +540,7 @@ router.post('/add-wastage', auth_1.checkPremiumAccess, async (req, res) => {
         res.json({ success: true, wastage, message: `Logged wastage: ${quantity} ${ingredient.unit} of ${ingredient.name}` });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Deduct Inventory ─────────────────────────────────────────
@@ -582,7 +590,7 @@ router.post('/deduct-inventory', async (req, res) => {
         res.json({ success: true, deductions });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Should Deliver Today ─────────────────────────────────────
@@ -622,7 +630,7 @@ router.post('/should-deliver-today', async (req, res) => {
         res.json({ shouldDeliver: true, customer });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Calculate End Date ───────────────────────────────────────
@@ -663,7 +671,7 @@ router.post('/calculate-end-date', async (req, res) => {
         res.json({ success: true, endDate, totalSkips: skipDates.size });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Initialize New User ──────────────────────────────────────
@@ -687,7 +695,7 @@ router.post('/initialize-new-user', async (req, res) => {
         res.json({ success: true, trial_ends_at: trialEndsAt.toISOString(), status: 'trial' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Check Subscription Status ────────────────────────────────
@@ -721,7 +729,7 @@ router.post('/check-subscription-status', async (req, res) => {
         res.json({ hasSubscription: true, status: sub.status });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Check Premium Access ─────────────────────────────────────
@@ -799,7 +807,7 @@ router.post('/list-active-plans', async (_req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Reset WhatsApp Cycle ─────────────────────────────────────
@@ -834,7 +842,7 @@ router.post('/send-customer-payment-reminder', auth_1.checkPremiumAccess, async 
         res.json({ success: true, message: 'Reminder sent' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Send Customer Email ──────────────────────────────────────
@@ -856,7 +864,7 @@ router.post('/send-customer-email', async (req, res) => {
         res.json(result);
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Assign User Plan (Super Admin) ──────────────────────────
@@ -895,7 +903,7 @@ router.post('/assign-user-plan', auth_1.superAdminOnly, async (req, res) => {
         res.json({ success: true, message: `Assigned ${planType} plan to ${targetUserEmail}` });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Manual Grant Access (Super Admin) ────────────────────────
@@ -927,7 +935,7 @@ router.post('/manual-grant-access', auth_1.superAdminOnly, async (req, res) => {
         res.json({ success: true });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Revoke User Access (Super Admin) ─────────────────────────
@@ -967,7 +975,7 @@ router.post('/revoke-user-access', auth_1.superAdminOnly, async (req, res) => {
         res.json({ success: true, message: `Revoked access for ${targetUserEmail}` });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Manage User (Super Admin) ────────────────────────────────
@@ -978,7 +986,26 @@ router.post('/manage-user', auth_1.superAdminOnly, async (req, res) => {
         if (!targetUser)
             return res.status(404).json({ error: 'User not found' });
         if (action === 'update') {
-            const { password_hash: _, ...safe } = await prisma_1.prisma.user.update({ where: { id: targetUser.id }, data });
+            // Whitelist, not spread. `data` came straight from the body into
+            // prisma.user.update, so a compromised admin session could set
+            // is_super_admin or password_hash on any account — one stolen session
+            // becoming total platform compromise. /api/admin/users/:id already does
+            // it this way.
+            const allowed = [
+                'full_name', 'business_name', 'phone', 'role', 'subscription_status',
+                'plan_type', 'subscription_source', 'trial_ends_at', 'subscription_ends_at',
+                'is_paid', 'whatsapp_limit', 'special_access_type', 'currency', 'language',
+                'timezone', 'country', 'fee_percentage',
+            ];
+            const updateData = {};
+            for (const key of allowed) {
+                if (data && Object.prototype.hasOwnProperty.call(data, key))
+                    updateData[key] = data[key];
+            }
+            const { password_hash: _, ...safe } = await prisma_1.prisma.user.update({
+                where: { id: targetUser.id },
+                data: updateData,
+            });
             return res.json({ success: true, user: safe });
         }
         if (action === 'delete') {
@@ -988,7 +1015,7 @@ router.post('/manage-user', auth_1.superAdminOnly, async (req, res) => {
         res.status(400).json({ error: 'Invalid action' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // Impersonate endpoint is in auth.ts — this duplicate was removed
@@ -1055,7 +1082,7 @@ router.post('/create-customer-payment-checkout', auth_1.blockIfImpersonating, as
         res.json({ success: true, checkoutUrl: session.url, sessionId: session.id, amount, platformFee: platformFeeAmount, netAmount });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Generate Customer Payment Link ──────────────────────────
@@ -1138,7 +1165,7 @@ router.post('/generate-customer-payment-link', auth_1.blockIfImpersonating, asyn
         res.json({ success: true, checkoutUrl: session.url, sessionId: session.id, amount, platformFee: platformFeeAmount, netAmount });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Create Stripe Connect Account ───────────────────────────
@@ -1187,7 +1214,7 @@ router.post('/create-stripe-connect-account', auth_1.blockIfImpersonating, async
     }
     catch (error) {
         console.error('[StripeConnect] Error:', error.message);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Get Stripe Account Status ───────────────────────────────
@@ -1233,7 +1260,7 @@ router.post('/get-stripe-account-status', async (req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Disconnect Payment Account ──────────────────────────────
@@ -1252,11 +1279,12 @@ router.post('/disconnect-payment-account', auth_1.blockIfImpersonating, async (r
         res.json({ success: true });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Subscription Reminders (scheduled) ──────────────────────
-router.post('/subscription-reminders', async (req, res) => {
+// superAdminOnly: emails every active subscriber across all tenants.
+router.post('/subscription-reminders', auth_1.superAdminOnly, async (req, res) => {
     try {
         const subs = await prisma_1.prisma.subscription.findMany({ where: { status: 'active' } });
         let sentCount = 0;
@@ -1277,7 +1305,7 @@ router.post('/subscription-reminders', async (req, res) => {
         res.json({ success: true, sent: sentCount });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Automatic Payment Reminders (scheduled) ─────────────────
@@ -1486,13 +1514,17 @@ async function runAutoPaymentReminders() {
     }
     return { success: true, beforeReminders: beforeCount, afterReminders: afterCount };
 }
-router.post('/automatic-payment-reminders', async (req, res) => {
+// superAdminOnly: this job iterates EVERY merchant — creating Stripe sessions
+// on their Connect accounts, spending their WhatsApp quota and writing
+// active:false to their customers. Cron imports the function directly, so the
+// HTTP route only ever needs to exist for manual admin triggering.
+router.post('/automatic-payment-reminders', auth_1.superAdminOnly, async (req, res) => {
     try {
         const result = await runAutoPaymentReminders();
         res.json(result);
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Auto Customer Payment Reminders ─────────────────────────
@@ -1669,7 +1701,7 @@ router.post('/generate-portal-link', async (req, res) => {
         res.json({ success: true, portalUrl, whatsappSent });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Generate Referral Code ───────────────────────────────────
@@ -1718,7 +1750,12 @@ router.post('/mark-round', async (req, res) => {
             });
         }
         else {
-            await prisma_1.prisma.$executeRawUnsafe(`UPDATE "Order" SET "delivery_status" = CASE
+            // $executeRaw (tagged template), not $executeRawUnsafe: the ids are
+            // server-derived from a tenant-scoped query above, but the tagged form
+            // parameterises by construction and removes any chance of a future edit
+            // concatenating user input into this string.
+            await prisma_1.prisma.$executeRaw `
+        UPDATE "Order" SET "delivery_status" = CASE
            WHEN (("meal_type" ILIKE '%lunch%') IS NOT TRUE OR "lunch_delivered_at" IS NOT NULL)
             AND (("meal_type" ILIKE '%dinner%') IS NOT TRUE OR "dinner_delivered_at" IS NOT NULL)
              THEN 'Delivered'
@@ -1726,12 +1763,12 @@ router.post('/mark-round', async (req, res) => {
              THEN 'Out for Delivery'
            ELSE 'Pending'
          END
-         WHERE "id" = ANY($1::text[])`, ids);
+         WHERE "id" = ANY(${ids}::text[])`;
         }
         res.json({ success: true, updated: ids.length, meal, action });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 router.post('/approve-customer', async (req, res) => {
@@ -1842,7 +1879,7 @@ router.post('/approve-customer', async (req, res) => {
         res.json({ success: true, message: 'Customer approved', checkoutUrl });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Reject Customer Registration ──────────────────────────────
@@ -1875,15 +1912,17 @@ router.post('/reject-customer', async (req, res) => {
         res.json({ success: true, message: 'Customer rejected' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Reconcile Subscription ───────────────────────────────────
 router.post('/reconcile-subscription', async (req, res) => {
     try {
         const user = req.user;
-        const { userEmail } = req.body;
-        const targetEmail = userEmail || user.email;
+        // Always the caller. This used to accept req.body.userEmail and fall back
+        // to the token, so any merchant could name another merchant's email and
+        // both read their subscription state and write to their user row.
+        const targetEmail = user.email;
         console.log(`[Reconcile] Checking subscription for ${targetEmail}`);
         const targetUser = await prisma_1.prisma.user.findUnique({ where: { email: targetEmail } });
         if (!targetUser)
@@ -1932,7 +1971,7 @@ router.post('/reconcile-subscription', async (req, res) => {
     }
     catch (error) {
         console.error('[Reconcile] Error:', error.message);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Auto Deduct Inventory on Delivery ────────────────────────
@@ -1994,7 +2033,7 @@ router.post('/auto-deduct-on-delivery', async (req, res) => {
         res.json({ success: true, deductions });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Share Driver Access ─────────────────────────────────────
@@ -2026,7 +2065,7 @@ router.post('/share-driver-access', async (req, res) => {
         res.json({ success: true, whatsappSent });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 // ─── Menu Image Upload ──────────────────────────────────────────

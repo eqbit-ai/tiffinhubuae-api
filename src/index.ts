@@ -13,6 +13,7 @@ import driverRoutes from './routes/driver';
 import notificationRoutes from './routes/notifications';
 import { startCronJobs } from './cron';
 import { prisma } from './lib/prisma';
+import { authMiddleware } from './middleware/auth';
 
 // --- JWT_SECRET startup validation ---
 const jwtSecret = process.env.JWT_SECRET;
@@ -47,6 +48,9 @@ const authLimiter = rateLimit({
 app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }));
 
 app.use(helmet());
+// The password-reset link necessarily carries its token in the URL; a strict
+// referrer policy stops that URL being sent on to any other origin.
+app.use(helmet.referrerPolicy({ policy: 'strict-origin-when-cross-origin' }));
 // Allow web frontend + mobile app origins
 const MOBILE_APP_ORIGINS = (process.env.MOBILE_APP_ORIGINS || '').split(',').filter(Boolean);
 app.use(cors({
@@ -61,7 +65,8 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Apply general rate limiter to all routes
 app.use(generalLimiter);
@@ -72,7 +77,23 @@ app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/driver/auth', authLimiter);
-app.use('/api/portal/send-otp', authLimiter);
+// These are the real portal auth paths; '/api/portal/send-otp' does not exist,
+// so the strict limiter was never applied to OTP request or verification.
+// Public self-registration: unauthenticated and reachable by anyone holding a
+// join link (which is public by design). Without a tight limit, one script can
+// create thousands of pending customers, each firing an email, a DB
+// notification and a push to the merchant.
+const joinLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many registrations from this address. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/portal/join', joinLimiter);
+
+app.use('/api/portal/auth/request-otp', authLimiter);
+app.use('/api/portal/auth/verify-otp', authLimiter);
 
 // Static file serving for uploads (with cross-origin headers for frontend)
 app.use('/uploads', (_req, res, next) => {
@@ -85,7 +106,20 @@ app.use('/uploads', (_req, res, next) => {
 const serverStartTime = Date.now();
 
 // Health check with real metrics (before auth-gated routes)
+// Unauthenticated: report liveness only. This used to return the Node version,
+// RSS/heap and uptime to anyone who asked, which is free reconnaissance.
 app.get('/api/health', async (_req, res) => {
+  let ok = true;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch {
+    ok = false;
+  }
+  return res.status(ok ? 200 : 503).json({ status: ok ? 'ok' : 'degraded' });
+});
+
+// Detailed metrics stay available, but behind auth.
+app.get('/api/health/detail', authMiddleware, async (_req, res) => {
   const mem = process.memoryUsage();
   let dbStatus = 'ok';
   try {

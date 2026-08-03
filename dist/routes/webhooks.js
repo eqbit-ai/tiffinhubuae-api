@@ -7,6 +7,14 @@ const email_1 = require("../services/email");
 const whatsapp_1 = require("../services/whatsapp");
 const date_fns_1 = require("date-fns");
 const router = (0, express_1.Router)();
+// Prisma validation errors name models, columns and argument types, and the
+// entity router lets a caller steer them via ?sortBy= and the where filter —
+// which turns a 500 into a free schema dump. Log the detail, return a generic
+// message.
+function safeError(error) {
+    console.error('[error]', error?.message || error);
+    return 'Something went wrong. Please try again.';
+}
 // POST /api/webhooks/stripe
 router.post('/stripe', async (req, res) => {
     const signature = req.headers['stripe-signature'];
@@ -725,7 +733,7 @@ router.post('/stripe', async (req, res) => {
     }
     catch (error) {
         console.error(`[Webhook] Error processing event ${event?.type}:`, error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: safeError(error) });
     }
 });
 exports.default = router;
