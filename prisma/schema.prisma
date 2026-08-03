@@ -268,6 +268,11 @@ model Ingredient {
   cost_per_unit       Float?   @default(0)
   total_value         Float?   @default(0)
   is_critical         Boolean  @default(false)
+  // How much of this ingredient one tiffin consumes, in `unit`. The daily job
+  // multiplies it by the day's real meal count and deducts. Null means "not
+  // tracked" — that ingredient is simply skipped rather than assumed zero.
+  usage_per_tiffin    Float?
+  last_deducted_date  String?   // guards against deducting the same day twice
   last_purchase_date  String?
   created_by          String
   created_at          DateTime @default(now())
@@ -519,9 +524,6 @@ model DeliveryBatch {
 
   @@index([created_by])
   @@index([delivery_date])
-  // One order per customer, per day, per meal plan. Added after 26% of rows
-  // turned out to be duplicates from a read-then-write race in the UI.
-  @@unique([created_by, customer_id, order_date, meal_type], map: "Order_customer_date_meal_key")
 }
 
 model DeliveryItem {

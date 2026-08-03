@@ -7,6 +7,7 @@ exports.startCronJobs = startCronJobs;
 exports.runDeliveryPhotoCleanup = runDeliveryPhotoCleanup;
 exports.runCustomerDaysMaintenance = runCustomerDaysMaintenance;
 exports.runMerchantTrialExpiry = runMerchantTrialExpiry;
+exports.runInventoryDeduction = runInventoryDeduction;
 const node_cron_1 = __importDefault(require("node-cron"));
 const prisma_1 = require("./lib/prisma");
 const functions_1 = require("./routes/functions");
@@ -45,6 +46,14 @@ function startCronJobs() {
         }
         catch (error) {
             console.error('[Cron] Customer days maintenance failed:', error);
+        }
+        console.log('[Cron] Running inventory deduction...');
+        try {
+            const result = await runInventoryDeduction();
+            console.log('[Cron] Inventory deduction complete:', result);
+        }
+        catch (error) {
+            console.error('[Cron] Inventory deduction failed:', error);
         }
         console.log('[Cron] Running auto-resume for paused customers...');
         try {
@@ -184,5 +193,98 @@ async function runMerchantTrialExpiry() {
         },
     });
     return { expired: result.count };
+}
+/**
+ * Daily inventory deduction.
+ *
+ * Inventory could previously only go up. Two endpoints existed to decrement
+ * stock — /functions/batch-cooking and /functions/deduct-inventory — but
+ * nothing in the app ever called them, so across 46 merchants there were zero
+ * ConsumptionLog rows and Critical Stock, Today's Cost and Total Consumed were
+ * permanently zero.
+ *
+ * Rather than require a recipe per dish (one recipe exists across all
+ * merchants), each ingredient carries usage_per_tiffin and this multiplies it
+ * by the meal count the app already knows from today's orders.
+ */
+async function runInventoryDeduction(dateStr) {
+    const day = dateStr || new Date().toISOString().slice(0, 10);
+    const tracked = await prisma_1.prisma.ingredient.findMany({
+        where: { usage_per_tiffin: { not: null, gt: 0 } },
+    });
+    if (tracked.length === 0)
+        return { merchants: 0, ingredients: 0, note: 'no ingredients tracked' };
+    // Meals, not orders: a "Lunch + Dinner" customer is one order row but two
+    // tiffins, and the kitchen cooks for both.
+    const orders = await prisma_1.prisma.order.findMany({
+        where: { order_date: day },
+        select: { created_by: true, meal_type: true },
+    });
+    const mealsByMerchant = new Map();
+    for (const o of orders) {
+        const mt = (o.meal_type || '').toLowerCase();
+        const meals = (mt.includes('breakfast') ? 1 : 0) +
+            (mt.includes('lunch') ? 1 : 0) +
+            (mt.includes('dinner') ? 1 : 0);
+        mealsByMerchant.set(o.created_by, (mealsByMerchant.get(o.created_by) || 0) + (meals || 1));
+    }
+    // Group ingredients per merchant so each merchant gets one consumption entry
+    // for the day rather than one per ingredient — ConsumptionLog carries the
+    // per-ingredient detail in ingredients_used.
+    const byMerchant = new Map();
+    for (const ing of tracked) {
+        if (!byMerchant.has(ing.created_by))
+            byMerchant.set(ing.created_by, []);
+        byMerchant.get(ing.created_by).push(ing);
+    }
+    let merchantsDone = 0;
+    let ingredientsDeducted = 0;
+    for (const [merchantId, ingredients] of byMerchant) {
+        const meals = mealsByMerchant.get(merchantId) || 0;
+        if (meals === 0)
+            continue;
+        // Idempotent: re-running on the same day must not deduct twice.
+        const pending = ingredients.filter((i) => i.last_deducted_date !== day);
+        if (pending.length === 0)
+            continue;
+        const used = [];
+        let totalCost = 0;
+        for (const ing of pending) {
+            const quantity = (ing.usage_per_tiffin || 0) * meals;
+            const newStock = Math.max(0, (ing.current_stock || 0) - quantity);
+            const cost = quantity * (ing.cost_per_unit || 0);
+            await prisma_1.prisma.ingredient.update({
+                where: { id: ing.id },
+                data: {
+                    current_stock: newStock,
+                    total_value: newStock * (ing.cost_per_unit || 0),
+                    last_deducted_date: day,
+                },
+            });
+            used.push({
+                ingredient_id: ing.id,
+                name: ing.name,
+                quantity,
+                unit: ing.unit,
+                cost,
+                remaining_stock: newStock,
+            });
+            totalCost += cost;
+            ingredientsDeducted++;
+        }
+        await prisma_1.prisma.consumptionLog.create({
+            data: {
+                date: day,
+                recipe_name: 'Daily tiffin production',
+                quantity_prepared: meals,
+                ingredients_used: used,
+                total_cost: totalCost,
+                cost_per_meal: meals > 0 ? totalCost / meals : 0,
+                created_by: merchantId,
+            },
+        });
+        merchantsDone++;
+    }
+    return { merchants: merchantsDone, ingredients: ingredientsDeducted, date: day };
 }
 //# sourceMappingURL=cron.js.map
