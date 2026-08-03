@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { prisma } from '../lib/prisma';
-import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly, blockIfImpersonating } from '../middleware/auth';
+import { authMiddleware, AuthRequest, checkPremiumAccess, superAdminOnly, blockIfImpersonating, hasProductAccess } from '../middleware/auth';
 import { sendEmail } from '../services/email';
 import { sendSMS } from '../services/sms';
 import { sendMerchantWhatsApp } from '../services/whatsapp';
@@ -805,24 +805,16 @@ router.post('/check-subscription-status', async (req: AuthRequest, res) => {
 // ─── Check Premium Access ─────────────────────────────────────
 router.post('/check-premium-access', async (req: AuthRequest, res) => {
   const user = req.user!;
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
-  const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
-  const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-  const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-
-  res.json({ hasPremiumAccess: hasPremium, plan_type: user.plan_type, subscription_status: user.subscription_status });
+  // One plan: access is binary.
+  res.json({ hasPremiumAccess: hasProductAccess(user), plan_type: user.plan_type, subscription_status: user.subscription_status });
 });
 
 // ─── Check Plan Access ────────────────────────────────────────
 router.post('/check-plan-access', async (req: AuthRequest, res) => {
   const user = req.user!;
   const { feature } = req.body;
-  const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
-  const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
-  const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-  const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-
-  res.json({ hasAccess: hasPremium, feature, plan_type: user.plan_type });
+  // Every feature ships in the one plan, so `feature` no longer changes the answer.
+  res.json({ hasAccess: hasProductAccess(user), feature, plan_type: user.plan_type });
 });
 
 // ─── Check Trial Expiry ──────────────────────────────────────
@@ -873,10 +865,10 @@ router.post('/list-active-plans', async (_req: AuthRequest, res) => {
       prices: [
         {
           id: STRIPE_PREMIUM_PRICE_ID || 'price_premium',
-          unit_amount: 1600,
+          unit_amount: 1000,
           currency: 'usd',
           recurring: { interval: 'month' },
-          product: { name: 'Premium Plan' },
+          product: { name: 'TiffinHub' },
         },
       ],
     });
@@ -948,14 +940,14 @@ router.post('/send-customer-email', async (req: AuthRequest, res) => {
 // ─── Assign User Plan (Super Admin) ──────────────────────────
 router.post('/assign-user-plan', superAdminOnly, async (req: AuthRequest, res) => {
   try {
-    const { targetUserEmail, planType, durationMonths } = req.body;
+    const { targetUserEmail, durationMonths } = req.body;
 
-    if (!targetUserEmail || !planType) {
+    if (!targetUserEmail) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-    if (!['basic', 'premium'].includes(planType)) {
-      return res.status(400).json({ error: 'Invalid plan type' });
-    }
+    // There is one plan, so an admin grant can only ever mean "give them the plan".
+    const planType = 'premium';
+
 
     const targetUser = await prisma.user.findUnique({ where: { email: targetUserEmail } });
     if (!targetUser) return res.status(404).json({ error: 'User not found' });
@@ -982,7 +974,7 @@ router.post('/assign-user-plan', superAdminOnly, async (req: AuthRequest, res) =
       },
     });
 
-    res.json({ success: true, message: `Assigned ${planType} plan to ${targetUserEmail}` });
+    res.json({ success: true, message: `Activated the plan for ${targetUserEmail}` });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -991,10 +983,11 @@ router.post('/assign-user-plan', superAdminOnly, async (req: AuthRequest, res) =
 // ─── Manual Grant Access (Super Admin) ────────────────────────
 router.post('/manual-grant-access', superAdminOnly, async (req: AuthRequest, res) => {
   try {
-    const { targetUserEmail, planType, months } = req.body;
-    if (!targetUserEmail || !planType) {
+    const { targetUserEmail, months } = req.body;
+    if (!targetUserEmail) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+    const planType = 'premium';
 
     const targetUser = await prisma.user.findUnique({ where: { email: targetUserEmail } });
     if (!targetUser) return res.status(404).json({ error: 'User not found' });
@@ -1695,11 +1688,8 @@ export async function runTrialExpiryCheck() {
       const user = await prisma.user.findUnique({ where: { id: customer.created_by } });
       if (!user) continue;
 
-      // Only premium merchants can use SMS features
-      const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me') || user.is_super_admin === true;
-      const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-      const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-      if (!hasPremium) continue;
+      // Subscribers only — don't spend SMS credit on lapsed accounts.
+      if (!hasProductAccess(user)) continue;
 
       let paymentLink = '';
       if (user.stripe_connect_account_id && user.payment_account_connected && user.payment_verification_status === 'verified') {

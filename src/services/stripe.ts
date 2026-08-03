@@ -7,4 +7,8 @@ export const stripe = new Stripe(stripeKey, {
 });
 
 export const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
-export const STRIPE_PREMIUM_PRICE_ID = process.env.STRIPE_PREMIUM_PRICE_ID || '';
+// The product has one plan, so there is one price. STRIPE_PRICE_ID is the name
+// going forward; STRIPE_PREMIUM_PRICE_ID is still read so the deployed env keeps
+// working without a coordinated restart.
+export const STRIPE_PREMIUM_PRICE_ID =
+  process.env.STRIPE_PRICE_ID || process.env.STRIPE_PREMIUM_PRICE_ID || '';

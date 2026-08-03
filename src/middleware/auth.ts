@@ -78,6 +78,19 @@ function isUserSuperAdmin(user: AuthRequest['user']): boolean {
   return user?.email === DEFAULT_SUPER_ADMIN || user?.is_super_admin === true;
 }
 
+/**
+ * Whether this user may use the product at all. There is one plan, so this is
+ * the only entitlement question the app ever needs to ask — the mirror of the
+ * frontend's utils/accessControl.hasPremiumAccess.
+ */
+export function hasProductAccess(user: { email?: string; is_super_admin?: boolean; special_access_type?: string | null; subscription_status?: string | null } | null | undefined): boolean {
+  if (!user) return false;
+  if (isUserSuperAdmin(user as AuthRequest['user'])) return true;
+  if (user.special_access_type && user.special_access_type !== 'none') return true;
+  const status = user.subscription_status;
+  return status !== 'expired' && status !== 'cancelled' && !!status;
+}
+
 export function superAdminOnly(req: AuthRequest, res: Response, next: NextFunction) {
   if (!isUserSuperAdmin(req.user)) {
     return res.status(403).json({ error: 'Forbidden: Super Admin only' });
@@ -112,32 +125,12 @@ export function checkActiveSubscription(req: AuthRequest, res: Response, next: N
   next();
 }
 
-export function checkPremiumAccess(req: AuthRequest, res: Response, next: NextFunction) {
-  const user = req.user!;
-
-  if (isUserSuperAdmin(user)) return next();
-  const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-  if (hasSpecialAccess) return next();
-
-  // Check subscription is active first
-  const status = user.subscription_status;
-  if (status === 'expired' || status === 'cancelled') {
-    return res.status(403).json({
-      error: 'Your subscription has expired. Please renew to continue.',
-      subscription_status: status,
-      renewal_required: true,
-    });
-  }
-
-  if (user.plan_type !== 'premium') {
-    return res.status(403).json({
-      error: 'This feature is available in the Premium plan',
-      current_plan: user.plan_type || 'none',
-      upgrade_required: true,
-    });
-  }
-  next();
-}
+/**
+ * There is one plan, so "premium" is no longer a tier — every feature ships to
+ * every subscriber. Kept under its old name because ~10 routes reference it;
+ * it is now exactly an active-subscription check.
+ */
+export const checkPremiumAccess = checkActiveSubscription;
 
 export async function customerAuthMiddleware(req: CustomerAuthRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
