@@ -8,17 +8,25 @@ const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
+const cloudinary_1 = require("../lib/cloudinary");
 const router = (0, express_1.Router)();
-// Multer setup for delivery photos
-const uploadsDir = path_1.default.join(__dirname, '../../uploads');
-const storage = multer_1.default.diskStorage({
-    destination: uploadsDir,
-    filename: (_req, file, cb) => {
-        const uniqueName = `delivery-${Date.now()}-${Math.round(Math.random() * 1e9)}${path_1.default.extname(file.originalname)}`;
-        cb(null, uniqueName);
-    },
+// Multer setup — memory storage for Cloudinary upload
+const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
+const imageFilter = (_req, file, cb) => {
+    const ext = path_1.default.extname(file.originalname).toLowerCase();
+    if (IMAGE_MIME_TYPES.has(file.mimetype) && IMAGE_EXTENSIONS.has(ext)) {
+        cb(null, true);
+    }
+    else {
+        cb(new Error('Only image files (jpg, png, gif, webp) are allowed'));
+    }
+};
+const upload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: imageFilter,
 });
-const upload = (0, multer_1.default)({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 // POST /api/driver/auth — validate access_code, return driver JWT + merchant info
 router.post('/auth', async (req, res) => {
     try {
@@ -99,12 +107,38 @@ router.get('/items/:batchId', auth_1.driverAuthMiddleware, async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch items' });
     }
 });
-// PUT /api/driver/items/:itemId/deliver — mark delivered + optional photo URL
+// GET /api/driver/item/:itemId — single delivery item (verified driver owns it)
+router.get('/item/:itemId', auth_1.driverAuthMiddleware, async (req, res) => {
+    try {
+        const driver = req.driver;
+        const itemId = req.params.itemId;
+        const item = await prisma_1.prisma.deliveryItem.findUnique({ where: { id: itemId } });
+        if (!item) {
+            return res.status(404).json({ error: 'Item not found' });
+        }
+        const batch = await prisma_1.prisma.deliveryBatch.findFirst({
+            where: {
+                id: item.batch_id,
+                driver_id: driver.id,
+                created_by: driver.merchant_id,
+            },
+        });
+        if (!batch) {
+            return res.status(403).json({ error: 'Not authorized for this item' });
+        }
+        res.json(item);
+    }
+    catch (error) {
+        console.error('[Driver Item] Error:', error);
+        res.status(500).json({ error: 'Failed to fetch item' });
+    }
+});
+// PUT /api/driver/items/:itemId/deliver — mark delivered + optional photo URL + GPS
 router.put('/items/:itemId/deliver', auth_1.driverAuthMiddleware, async (req, res) => {
     try {
         const driver = req.driver;
         const itemId = req.params.itemId;
-        const { delivery_photo } = req.body;
+        const { delivery_photo, latitude, longitude } = req.body;
         // Verify the item belongs to a batch assigned to this driver
         const item = await prisma_1.prisma.deliveryItem.findUnique({ where: { id: itemId } });
         if (!item) {
@@ -127,6 +161,8 @@ router.put('/items/:itemId/deliver', auth_1.driverAuthMiddleware, async (req, re
                 status: 'delivered',
                 delivered_at: new Date(),
                 ...(delivery_photo ? { delivery_photo } : {}),
+                ...(latitude != null ? { delivery_latitude: parseFloat(latitude) } : {}),
+                ...(longitude != null ? { delivery_longitude: parseFloat(longitude) } : {}),
             },
         });
         // Update batch delivered count
@@ -147,19 +183,79 @@ router.put('/items/:itemId/deliver', auth_1.driverAuthMiddleware, async (req, re
         res.status(500).json({ error: 'Failed to mark as delivered' });
     }
 });
-// POST /api/driver/upload-photo — multer file upload, returns URL
+// POST /api/driver/upload-photo — upload to Cloudinary, returns URL
 router.post('/upload-photo', auth_1.driverAuthMiddleware, upload.single('photo'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No photo uploaded' });
         }
-        const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
-        const photoUrl = `${backendUrl}/uploads/${req.file.filename}`;
+        const photoUrl = await (0, cloudinary_1.uploadToCloudinary)(req.file.buffer, 'tiffinhub/deliveries', `delivery-${Date.now()}`);
         res.json({ url: photoUrl });
     }
     catch (error) {
         console.error('[Driver Upload] Error:', error);
         res.status(500).json({ error: 'Failed to upload photo' });
+    }
+});
+// POST /api/driver/location — update driver's live location
+router.post('/location', auth_1.driverAuthMiddleware, async (req, res) => {
+    try {
+        const driver = req.driver;
+        const { latitude, longitude, heading, speed, accuracy, batch_id } = req.body;
+        if (latitude == null || longitude == null) {
+            return res.status(400).json({ error: 'Latitude and longitude are required' });
+        }
+        // Deactivate old locations for this driver
+        await prisma_1.prisma.driverLocation.updateMany({
+            where: { driver_id: driver.id, is_active: true },
+            data: { is_active: false },
+        });
+        // Create new active location
+        const location = await prisma_1.prisma.driverLocation.create({
+            data: {
+                driver_id: driver.id,
+                batch_id: batch_id || null,
+                latitude: parseFloat(latitude),
+                longitude: parseFloat(longitude),
+                heading: heading != null ? parseFloat(heading) : null,
+                speed: speed != null ? parseFloat(speed) : null,
+                accuracy: accuracy != null ? parseFloat(accuracy) : null,
+                is_active: true,
+            },
+        });
+        res.json({ success: true, id: location.id });
+    }
+    catch (error) {
+        console.error('[Driver Location] Error:', error);
+        res.status(500).json({ error: 'Failed to update location' });
+    }
+});
+// GET /api/driver/location/:driverId — get latest active location (public for portal)
+router.get('/location/:driverId', auth_1.driverAuthMiddleware, async (req, res) => {
+    try {
+        const driverId = req.params.driverId;
+        // Drivers can only see their own location; merchants handled via separate auth
+        if (req.driver && req.driver.id !== driverId) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        const location = await prisma_1.prisma.driverLocation.findFirst({
+            where: { driver_id: driverId, is_active: true },
+            orderBy: { created_at: 'desc' },
+        });
+        if (!location) {
+            return res.status(404).json({ error: 'No active location found' });
+        }
+        res.json({
+            latitude: location.latitude,
+            longitude: location.longitude,
+            heading: location.heading,
+            speed: location.speed,
+            updated_at: location.updated_at,
+        });
+    }
+    catch (error) {
+        console.error('[Driver Location Get] Error:', error);
+        res.status(500).json({ error: 'Failed to fetch location' });
     }
 });
 exports.default = router;

@@ -8,9 +8,10 @@ export declare function runTrialExpiryCheck(): Promise<{
     success: boolean;
     trialReminders: number;
 }>;
-export declare function runMealRatingRequests(): Promise<{
+export declare function runAutoResumePausedCustomers(): Promise<{
     success: boolean;
-    ratingRequests: number;
+    resumed: number;
+    checked: number;
 }>;
 export default router;
 //# sourceMappingURL=functions.d.ts.map

@@ -22,6 +22,14 @@ router.post('/stripe', async (req, res) => {
     }
     try {
         console.log(`[Webhook] Received event: ${event.type} (id: ${event.id})`);
+        // DB-backed idempotency — skip if we already processed this exact event
+        const existingLog = await prisma_1.prisma.systemLog.findFirst({
+            where: { log_type: 'webhook_processed', source: event.id },
+        });
+        if (existingLog) {
+            console.log(`[Webhook] Duplicate event ${event.id} — skipping`);
+            return res.json({ received: true, duplicate: true });
+        }
         switch (event.type) {
             case 'checkout.session.completed': {
                 const session = event.data.object;
@@ -66,7 +74,7 @@ router.post('/stripe', async (req, res) => {
                             to: customerOwnerEmail,
                             subject: `New Paid Registration - ${customer.full_name}`,
                             body: `<h2>New Paid Customer Registration</h2>
-<p><strong>${customer.full_name}</strong> has registered and paid <strong>${(session.currency || 'aed').toUpperCase()} ${amount}</strong>.</p>
+<p><strong>${customer.full_name}</strong> has registered and paid <strong>${(session.currency || 'usd').toUpperCase()} ${amount}</strong>.</p>
 <p>Please approve their registration in your dashboard.</p>`,
                         });
                     }
@@ -106,7 +114,7 @@ router.post('/stripe', async (req, res) => {
                             data: {
                                 user_email: customerOwnerEmail,
                                 title: 'New Order Received',
-                                message: `${order.customer_name} placed an order for ${(order.currency || 'AED')} ${order.total_amount}`,
+                                message: `${order.customer_name} placed an order for ${(order.currency || 'USD')} ${order.total_amount}`,
                                 type: 'order',
                                 notification_type: 'info',
                                 customer_id: order.customer_id,
@@ -132,7 +140,7 @@ router.post('/stripe', async (req, res) => {
                                     to: customer.phone_number,
                                     message: `Order Confirmed\n\nThank you ${customer.full_name}!\n\nYour order of ${order.currency} ${order.total_amount} has been confirmed.\n\nThank you!`,
                                     templateName: 'ORDER_CONFIRMED',
-                                    contentVariables: { 'name': customer.full_name || 'Customer', 'currency': order.currency || 'AED', 'amount': String(order.total_amount) },
+                                    contentVariables: { 'name': customer.full_name || 'Customer', 'currency': order.currency || 'USD', 'amount': String(order.total_amount) },
                                 });
                             }
                             catch (e) {
@@ -160,10 +168,19 @@ router.post('/stripe', async (req, res) => {
                     });
                     if (customer) {
                         const amount = session.amount_total / 100;
-                        const currency = (session.currency || 'aed').toUpperCase();
+                        const currency = (session.currency || 'usd').toUpperCase();
                         console.log(`[Webhook] Processing renewal for ${customer.full_name} — ${currency} ${amount}`);
+                        // Idempotency: skip if already paid for this session
+                        const existingPayment = await prisma_1.prisma.paymentLink.findFirst({
+                            where: { stripe_checkout_session_id: session.id, status: 'paid' },
+                        });
+                        if (existingPayment) {
+                            console.log(`[Webhook] Renewal already processed for session ${session.id} — skipping`);
+                            break;
+                        }
                         const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
                         const newEndDate = (0, date_fns_1.addMonths)(baseDate, 1);
+                        const newDaysRemaining = Math.max(Math.ceil((newEndDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)), 0);
                         await prisma_1.prisma.customer.update({
                             where: { id: customer.id },
                             data: {
@@ -178,8 +195,8 @@ router.post('/stripe', async (req, res) => {
                                 reminder_after_sent: false,
                                 end_date: newEndDate,
                                 due_date: newEndDate,
-                                paid_days: (customer.paid_days || 0) + 30,
-                                days_remaining: (customer.days_remaining || 0) + 30,
+                                paid_days: 30,
+                                days_remaining: newDaysRemaining,
                             },
                         });
                         const endFormatted = (0, date_fns_1.format)(newEndDate, 'dd MMM yyyy');
@@ -204,7 +221,7 @@ router.post('/stripe', async (req, res) => {
 <p><strong>Amount:</strong> ${currency} ${amount}</p>
 <p><strong>Valid until:</strong> ${endFormatted}</p>`,
                         });
-                        // Update payment link
+                        // Update payment link — mark as paid
                         const paymentLinks = await prisma_1.prisma.paymentLink.findMany({
                             where: { customer_id: customerId, created_by: ownerUser.id, stripe_checkout_session_id: session.id },
                         });
@@ -238,7 +255,7 @@ router.post('/stripe', async (req, res) => {
                     });
                     if (customer) {
                         const amount = session.amount_total / 100;
-                        const currency = (session.currency || 'aed').toUpperCase();
+                        const currency = (session.currency || 'usd').toUpperCase();
                         console.log(`[Webhook] Processing trial conversion for ${customer.full_name} — ${currency} ${amount}`);
                         const newStartDate = new Date();
                         const newEndDate = (0, date_fns_1.addMonths)(newStartDate, 1);
@@ -314,7 +331,7 @@ router.post('/stripe', async (req, res) => {
                     });
                     if (customer) {
                         const amount = session.amount_total / 100;
-                        const currency = (session.currency || 'aed').toUpperCase();
+                        const currency = (session.currency || 'usd').toUpperCase();
                         console.log(`[Webhook] Processing legacy payment for ${customer.full_name} — ${currency} ${amount}`);
                         // Extend subscription by 1 month from current end_date (or from today if no end_date)
                         const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
@@ -388,6 +405,14 @@ router.post('/stripe', async (req, res) => {
                         console.log('[Webhook] No subscription ID found on checkout session');
                         break;
                     }
+                    // Idempotency: check if we already recorded this payment
+                    const existingHistory = await prisma_1.prisma.paymentHistory.findFirst({
+                        where: { stripe_payment_id: session.payment_intent },
+                    });
+                    if (existingHistory) {
+                        console.log(`[Webhook] Platform subscription already processed for payment_intent ${session.payment_intent} — skipping`);
+                        break;
+                    }
                     const subscription = await stripe_1.stripe.subscriptions.retrieve(sessionSubscriptionId);
                     const user = await prisma_1.prisma.user.findUnique({ where: { email: userEmail } });
                     if (!user) {
@@ -426,7 +451,7 @@ router.post('/stripe', async (req, res) => {
                             user_email: userEmail,
                             subscription_id: subscription.id,
                             amount: 60.00,
-                            currency: 'AED',
+                            currency: user.currency || 'USD',
                             status: 'succeeded',
                             payment_date: new Date(),
                             stripe_payment_id: session.payment_intent,
@@ -478,6 +503,11 @@ router.post('/stripe', async (req, res) => {
                                 where: { id: customerId, created_by: ownerUser.id, is_deleted: false },
                             });
                             if (customer) {
+                                // Idempotency: skip if customer was already paid and last_payment matches this invoice
+                                if (customer.payment_status === 'Paid' && customer.last_payment_amount === invoice.amount_paid / 100) {
+                                    console.log(`[Webhook] Invoice payment already processed for customer ${customer.id} — skipping`);
+                                    break;
+                                }
                                 const amount = invoice.amount_paid / 100;
                                 const baseDate = customer.end_date && new Date(customer.end_date) > new Date() ? new Date(customer.end_date) : new Date();
                                 const newEndDate = (0, date_fns_1.addMonths)(baseDate, 1);
@@ -511,12 +541,14 @@ router.post('/stripe', async (req, res) => {
                     const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: invoiceSubscriptionId } });
                     if (subs.length > 0) {
                         const sub = subs[0];
+                        const renewalPeriodEnd = subscription.current_period_end
+                            ? new Date(subscription.current_period_end * 1000)
+                            : null;
                         await prisma_1.prisma.subscription.update({
                             where: { id: sub.id },
                             data: {
                                 status: 'active',
-                                next_billing_date: new Date(subscription.current_period_end * 1000),
-                                current_period_end: new Date(subscription.current_period_end * 1000),
+                                ...(renewalPeriodEnd && { next_billing_date: renewalPeriodEnd, current_period_end: renewalPeriodEnd }),
                                 reminder_before_sent: false,
                                 reminder_after_sent: false,
                             },
@@ -540,8 +572,7 @@ router.post('/stripe', async (req, res) => {
                                     subscription_status: 'active',
                                     plan_type: 'premium',
                                     is_paid: true,
-                                    current_period_end: new Date(subscription.current_period_end * 1000),
-                                    subscription_ends_at: new Date(subscription.current_period_end * 1000),
+                                    ...(renewalPeriodEnd && { current_period_end: renewalPeriodEnd, subscription_ends_at: renewalPeriodEnd }),
                                     last_payment_status: 'succeeded',
                                 },
                             });
@@ -598,11 +629,15 @@ router.post('/stripe', async (req, res) => {
                             },
                         });
                         const user = await prisma_1.prisma.user.findUnique({ where: { email: sub.user_email } });
-                        if (user) {
+                        // Only downgrade user if this failed subscription is their current one
+                        if (user && user.stripe_subscription_id === invoiceSubId) {
                             await prisma_1.prisma.user.update({
                                 where: { id: user.id },
                                 data: { subscription_status: 'past_due', is_paid: false, last_payment_status: 'failed' },
                             });
+                        }
+                        else if (user) {
+                            console.log(`[Webhook] Skipping user downgrade — failed sub ${invoiceSubId} != user's current sub ${user.stripe_subscription_id}`);
                         }
                         await (0, email_1.sendEmail)({
                             to: sub.user_email,
@@ -617,28 +652,35 @@ router.post('/stripe', async (req, res) => {
                 const subscription = event.data.object;
                 console.log(`[Webhook] customer.subscription.updated — subscriptionId: ${subscription.id}, status: ${subscription.status}`);
                 const subs = await prisma_1.prisma.subscription.findMany({ where: { stripe_subscription_id: subscription.id } });
+                const periodEnd = subscription.current_period_end
+                    ? new Date(subscription.current_period_end * 1000)
+                    : null;
                 if (subs.length > 0) {
                     const sub = subs[0];
                     await prisma_1.prisma.subscription.update({
                         where: { id: sub.id },
                         data: {
                             status: subscription.status,
-                            next_billing_date: new Date(subscription.current_period_end * 1000),
-                            current_period_end: new Date(subscription.current_period_end * 1000),
+                            ...(periodEnd && { next_billing_date: periodEnd, current_period_end: periodEnd }),
                         },
                     });
                     const user = await prisma_1.prisma.user.findUnique({ where: { email: sub.user_email } });
                     if (user && user.subscription_source !== 'admin') {
-                        await prisma_1.prisma.user.update({
-                            where: { id: user.id },
-                            data: {
-                                subscription_status: subscription.status,
-                                plan_type: 'premium',
-                                is_paid: subscription.status === 'active',
-                                current_period_end: new Date(subscription.current_period_end * 1000),
-                                subscription_ends_at: new Date(subscription.current_period_end * 1000),
-                            },
-                        });
+                        // Only update user if this subscription is their current one — don't let old/stale subscriptions override
+                        if (user.stripe_subscription_id !== subscription.id) {
+                            console.log(`[Webhook] Skipping user update — subscription ${subscription.id} != user's current sub ${user.stripe_subscription_id}`);
+                        }
+                        else {
+                            await prisma_1.prisma.user.update({
+                                where: { id: user.id },
+                                data: {
+                                    subscription_status: subscription.status,
+                                    plan_type: 'premium',
+                                    is_paid: subscription.status === 'active',
+                                    ...(periodEnd && { current_period_end: periodEnd, subscription_ends_at: periodEnd }),
+                                },
+                            });
+                        }
                     }
                 }
                 break;
@@ -669,6 +711,15 @@ router.post('/stripe', async (req, res) => {
                 break;
             }
         }
+        // Mark event as processed in DB (persistent across deploys)
+        await prisma_1.prisma.systemLog.create({
+            data: {
+                log_type: 'webhook_processed',
+                severity: 'info',
+                source: event.id,
+                message: `Processed ${event.type}`,
+            },
+        }).catch(() => { }); // Non-critical — don't fail the webhook response
         console.log(`[Webhook] Successfully processed event: ${event.type}`);
         res.json({ received: true });
     }

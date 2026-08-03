@@ -9,6 +9,7 @@ export declare const TEMPLATES: {
     SERVICE_ENDED: string;
     FEEDBACK_REQUEST: string;
     REGISTRATION_STATUS: string;
+    PORTAL_LINK: string;
 };
 export declare function hasTemplate(templateName: keyof typeof TEMPLATES): boolean;
 //# sourceMappingURL=whatsappTemplates.d.ts.map

@@ -8,14 +8,22 @@ exports.generateCustomerToken = generateCustomerToken;
 exports.generateDriverToken = generateDriverToken;
 exports.authMiddleware = authMiddleware;
 exports.superAdminOnly = superAdminOnly;
+exports.blockIfImpersonating = blockIfImpersonating;
+exports.checkActiveSubscription = checkActiveSubscription;
 exports.checkPremiumAccess = checkPremiumAccess;
 exports.customerAuthMiddleware = customerAuthMiddleware;
 exports.driverAuthMiddleware = driverAuthMiddleware;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_1 = require("../lib/prisma");
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production';
-function generateToken(userId) {
-    return jsonwebtoken_1.default.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+if (!process.env.JWT_SECRET) {
+    console.error('⚠️  CRITICAL: JWT_SECRET environment variable is not set! Using insecure default.');
+}
+function generateToken(userId, impersonatedBy) {
+    const payload = { userId };
+    if (impersonatedBy)
+        payload.impersonatedBy = impersonatedBy;
+    return jsonwebtoken_1.default.sign(payload, JWT_SECRET, { expiresIn: impersonatedBy ? '4h' : '30d' });
 }
 function generateCustomerToken(customerId, merchantId) {
     return jsonwebtoken_1.default.sign({ customerId, merchantId, type: 'customer' }, JWT_SECRET, { expiresIn: '30d' });
@@ -35,6 +43,7 @@ async function authMiddleware(req, res, next) {
         if (!user) {
             return res.status(401).json({ error: 'User not found' });
         }
+        user.impersonatedBy = decoded.impersonatedBy || null;
         req.user = user;
         next();
     }
@@ -42,21 +51,57 @@ async function authMiddleware(req, res, next) {
         return res.status(401).json({ error: 'Invalid token' });
     }
 }
+function isUserSuperAdmin(user) {
+    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
+    return user?.email === DEFAULT_SUPER_ADMIN || user?.is_super_admin === true;
+}
 function superAdminOnly(req, res, next) {
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
-    const isSuperAdmin = req.user?.email === DEFAULT_SUPER_ADMIN || req.user?.is_super_admin === true;
-    if (!isSuperAdmin) {
+    if (!isUserSuperAdmin(req.user)) {
         return res.status(403).json({ error: 'Forbidden: Super Admin only' });
+    }
+    next();
+}
+function blockIfImpersonating(req, res, next) {
+    if (req.user?.impersonatedBy) {
+        return res.status(403).json({ error: 'This action is not allowed while impersonating a user' });
+    }
+    next();
+}
+function checkActiveSubscription(req, res, next) {
+    const user = req.user;
+    // Super admins and special_access users bypass subscription check
+    if (isUserSuperAdmin(user))
+        return next();
+    const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
+    if (hasSpecialAccess)
+        return next();
+    const status = user.subscription_status;
+    if (status === 'expired' || status === 'cancelled') {
+        return res.status(403).json({
+            error: 'Your subscription has expired. Please renew to continue.',
+            subscription_status: status,
+            renewal_required: true,
+        });
     }
     next();
 }
 function checkPremiumAccess(req, res, next) {
     const user = req.user;
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
-    const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin === true;
+    if (isUserSuperAdmin(user))
+        return next();
     const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-    const hasPremiumAccess = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-    if (!hasPremiumAccess) {
+    if (hasSpecialAccess)
+        return next();
+    // Check subscription is active first
+    const status = user.subscription_status;
+    if (status === 'expired' || status === 'cancelled') {
+        return res.status(403).json({
+            error: 'Your subscription has expired. Please renew to continue.',
+            subscription_status: status,
+            renewal_required: true,
+        });
+    }
+    if (user.plan_type !== 'premium') {
         return res.status(403).json({
             error: 'This feature is available in the Premium plan',
             current_plan: user.plan_type || 'none',

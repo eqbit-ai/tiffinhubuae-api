@@ -10,12 +10,28 @@ const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
 const email_1 = require("../services/email");
 const router = (0, express_1.Router)();
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
     try {
-        const { email, password, full_name } = req.body;
+        const { email, password, full_name, phone, country, timezone, currency } = req.body;
         if (!email || !password) {
             return res.status(400).json({ error: 'Email and password required' });
+        }
+        if (!EMAIL_REGEX.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters' });
+        }
+        // Mobile number is required at signup (the signup form collects it).
+        const phoneTrimmed = typeof phone === 'string' ? phone.trim() : '';
+        if (!phoneTrimmed) {
+            return res.status(400).json({ error: 'Mobile number is required' });
+        }
+        const phoneDigits = phoneTrimmed.replace(/\D/g, '');
+        if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+            return res.status(400).json({ error: 'Invalid mobile number' });
         }
         const existing = await prisma_1.prisma.user.findUnique({ where: { email } });
         // Handle re-signup after account deletion
@@ -27,6 +43,7 @@ router.post('/register', async (req, res) => {
                 data: {
                     password_hash,
                     full_name: full_name || null,
+                    phone: phoneTrimmed || null,
                     subscription_status: 'expired',
                     plan_type: null,
                     subscription_source: null,
@@ -48,10 +65,14 @@ router.post('/register', async (req, res) => {
                 email,
                 password_hash,
                 full_name: full_name || null,
+                phone: phoneTrimmed || null,
                 subscription_status: 'trial',
                 plan_type: 'trial',
                 subscription_source: 'trial',
                 trial_ends_at: trialEndsAt,
+                ...(country ? { country } : {}),
+                ...(timezone ? { timezone } : {}),
+                ...(currency ? { currency } : {}),
             },
         });
         const token = (0, auth_1.generateToken)(user.id);
@@ -99,7 +120,8 @@ router.post('/register', async (req, res) => {
         res.status(201).json({ token, user: safeUser });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Register] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 // POST /api/auth/login
@@ -109,8 +131,15 @@ router.post('/login', async (req, res) => {
         if (!email || !password) {
             return res.status(400).json({ error: 'Email and password required' });
         }
+        if (!EMAIL_REGEX.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
         const user = await prisma_1.prisma.user.findUnique({ where: { email } });
         if (!user) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        // Reject deleted accounts
+        if (user.subscription_status === 'deleted') {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         const valid = await bcryptjs_1.default.compare(password, user.password_hash);
@@ -122,17 +151,32 @@ router.post('/login', async (req, res) => {
         res.json({ token, user: safeUser });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Login] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 // GET /api/auth/me
 router.get('/me', auth_1.authMiddleware, async (req, res) => {
     const { password_hash: _, ...safeUser } = req.user;
+    // Auto-expire merchant trial if trial_ends_at has passed
+    if (safeUser.subscription_status === 'trial' && safeUser.trial_ends_at) {
+        if (new Date() > new Date(safeUser.trial_ends_at)) {
+            await prisma_1.prisma.user.update({
+                where: { id: safeUser.id },
+                data: { subscription_status: 'expired', plan_type: 'none' },
+            });
+            safeUser.subscription_status = 'expired';
+            safeUser.plan_type = 'none';
+        }
+    }
     if (safeUser.created_at)
         safeUser.created_date = safeUser.created_at;
     if (safeUser.updated_at)
         safeUser.updated_date = safeUser.updated_at;
     safeUser.whatsapp_limit = Math.max(safeUser.whatsapp_limit || 400, 400);
+    // Expose impersonation state so the frontend can disable payment/destructive
+    // actions and show a banner (payments are blocked server-side while impersonating).
+    safeUser.is_impersonating = !!req.user?.impersonatedBy;
     res.json(safeUser);
 });
 // PUT /api/auth/me
@@ -142,6 +186,8 @@ router.put('/me', auth_1.authMiddleware, async (req, res) => {
         const allowedFields = [
             'full_name', 'phone', 'business_name', 'logo_url',
             'whatsapp_notifications_enabled', 'whatsapp_number',
+            'currency', 'language', 'timezone', 'country',
+            'brand_primary_color', 'brand_accent_color', 'custom_domain',
         ];
         const data = {};
         for (const field of allowedFields) {
@@ -153,7 +199,8 @@ router.put('/me', auth_1.authMiddleware, async (req, res) => {
         res.json(safeUser);
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Update Profile] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 // POST /api/auth/impersonate — super admin generates a token for target user
@@ -165,12 +212,15 @@ router.post('/impersonate', auth_1.authMiddleware, auth_1.superAdminOnly, async 
         const targetUser = await prisma_1.prisma.user.findUnique({ where: { email } });
         if (!targetUser)
             return res.status(404).json({ error: 'User not found' });
-        const token = (0, auth_1.generateToken)(targetUser.id);
+        console.log(`[IMPERSONATION] Admin ${req.user.email} impersonated ${email} at ${new Date().toISOString()}`);
+        // Token includes impersonatedBy — backend can block destructive actions
+        const token = (0, auth_1.generateToken)(targetUser.id, req.user.id);
         const { password_hash: _, ...safeUser } = targetUser;
         res.json({ token, user: safeUser });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Impersonate] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 // DELETE /api/auth/delete-account
@@ -178,15 +228,20 @@ router.delete('/delete-account', auth_1.authMiddleware, async (req, res) => {
     try {
         const userId = req.user.id;
         const userEmail = req.user.email;
-        // Record that this email previously had an account (for trial restriction)
-        // We store it before deleting so re-signups skip trial
-        await prisma_1.prisma.user.update({
-            where: { id: userId },
-            data: {
-            // Mark as deleted before purging — flag the email for future signups
-            },
-        });
         // Delete all user-owned data across all entities
+        // First: get IDs for child record cleanup
+        const userDrivers = await prisma_1.prisma.driver.findMany({ where: { created_by: userId }, select: { id: true } });
+        const driverIds = userDrivers.map(d => d.id);
+        // Delete child records (these all have created_by directly)
+        await Promise.all([
+            prisma_1.prisma.deliveryItem.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.consumptionLog.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.prepItem.deleteMany({ where: { created_by: userId } }),
+            driverIds.length > 0
+                ? prisma_1.prisma.driverLocation.deleteMany({ where: { driver_id: { in: driverIds } } })
+                : Promise.resolve(),
+        ]);
+        // Then: delete all remaining user-owned data
         await Promise.all([
             prisma_1.prisma.customer.deleteMany({ where: { created_by: userId } }),
             prisma_1.prisma.order.deleteMany({ where: { created_by: userId } }),
@@ -199,10 +254,19 @@ router.delete('/delete-account', auth_1.authMiddleware, async (req, res) => {
             prisma_1.prisma.purchase.deleteMany({ where: { created_by: userId } }),
             prisma_1.prisma.wastage.deleteMany({ where: { created_by: userId } }),
             prisma_1.prisma.paymentLink.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.invoice.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.driver.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.deliveryBatch.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.kitchen.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.chatMessage.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.oneTimeOrder.deleteMany({ where: { created_by: userId } }),
+            prisma_1.prisma.customerOTP.deleteMany({ where: { merchant_id: userId } }),
+            prisma_1.prisma.deviceToken.deleteMany({ where: { user_email: userEmail } }),
             prisma_1.prisma.notification.deleteMany({ where: { user_email: userEmail } }),
             prisma_1.prisma.supportTicket.deleteMany({ where: { user_email: userEmail } }),
             prisma_1.prisma.subscription.deleteMany({ where: { user_email: userEmail } }),
             prisma_1.prisma.paymentHistory.deleteMany({ where: { user_email: userEmail } }),
+            prisma_1.prisma.systemLog.deleteMany({ where: { created_by: userId } }),
         ]);
         // Store a deleted-account record so re-signups don't get a free trial
         // We use a simple approach: create a record in a lightweight way
@@ -223,7 +287,8 @@ router.delete('/delete-account', auth_1.authMiddleware, async (req, res) => {
         res.json({ success: true });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Delete Account] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 // POST /api/auth/forgot-password
@@ -232,6 +297,9 @@ router.post('/forgot-password', async (req, res) => {
         const { email } = req.body;
         if (!email) {
             return res.status(400).json({ error: 'Email is required' });
+        }
+        if (!EMAIL_REGEX.test(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
         }
         const user = await prisma_1.prisma.user.findUnique({ where: { email } });
         if (user && user.subscription_status !== 'deleted') {
@@ -259,7 +327,8 @@ router.post('/forgot-password', async (req, res) => {
         res.json({ message: 'If an account with that email exists, a reset link has been sent.' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Forgot Password] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 // POST /api/auth/reset-password
@@ -268,6 +337,9 @@ router.post('/reset-password', async (req, res) => {
         const { token, password } = req.body;
         if (!token || !password) {
             return res.status(400).json({ error: 'Token and password are required' });
+        }
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters' });
         }
         const user = await prisma_1.prisma.user.findFirst({
             where: {
@@ -307,7 +379,8 @@ router.post('/reset-password', async (req, res) => {
         res.json({ message: 'Password has been reset successfully' });
     }
     catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('[Reset Password] Error:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 exports.default = router;

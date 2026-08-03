@@ -15,6 +15,20 @@ router.use(auth_1.authMiddleware);
 const uploadsDir = path_1.default.join(__dirname, '../../uploads');
 if (!fs_1.default.existsSync(uploadsDir))
     fs_1.default.mkdirSync(uploadsDir, { recursive: true });
+const ALLOWED_MIME_TYPES = new Set([
+    'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+    'application/pdf',
+]);
+const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf']);
+const fileFilter = (_req, file, cb) => {
+    const ext = path_1.default.extname(file.originalname).toLowerCase();
+    if (ALLOWED_MIME_TYPES.has(file.mimetype) && ALLOWED_EXTENSIONS.has(ext)) {
+        cb(null, true);
+    }
+    else {
+        cb(new Error('Only image files (jpg, png, gif, webp) and PDFs are allowed'));
+    }
+};
 const storage = multer_1.default.diskStorage({
     destination: uploadsDir,
     filename: (_req, file, cb) => {
@@ -22,7 +36,7 @@ const storage = multer_1.default.diskStorage({
         cb(null, uniqueName);
     },
 });
-const upload = (0, multer_1.default)({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+const upload = (0, multer_1.default)({ storage, limits: { fileSize: 10 * 1024 * 1024 }, fileFilter });
 // POST /api/integrations/send-email
 router.post('/send-email', async (req, res) => {
     try {

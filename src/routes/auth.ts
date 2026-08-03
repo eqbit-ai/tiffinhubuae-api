@@ -253,7 +253,6 @@ router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) =
     // Delete child records (these all have created_by directly)
     await Promise.all([
       prisma.deliveryItem.deleteMany({ where: { created_by: userId } }),
-      prisma.containerLog.deleteMany({ where: { created_by: userId } }),
       prisma.consumptionLog.deleteMany({ where: { created_by: userId } }),
       prisma.prepItem.deleteMany({ where: { created_by: userId } }),
       driverIds.length > 0
@@ -275,15 +274,11 @@ router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) =
       prisma.wastage.deleteMany({ where: { created_by: userId } }),
       prisma.paymentLink.deleteMany({ where: { created_by: userId } }),
       prisma.invoice.deleteMany({ where: { created_by: userId } }),
-      prisma.referral.deleteMany({ where: { created_by: userId } }),
-      prisma.familyGroup.deleteMany({ where: { created_by: userId } }),
       prisma.driver.deleteMany({ where: { created_by: userId } }),
       prisma.deliveryBatch.deleteMany({ where: { created_by: userId } }),
-      prisma.container.deleteMany({ where: { created_by: userId } }),
       prisma.kitchen.deleteMany({ where: { created_by: userId } }),
       prisma.chatMessage.deleteMany({ where: { created_by: userId } }),
       prisma.oneTimeOrder.deleteMany({ where: { created_by: userId } }),
-      prisma.mealRating.deleteMany({ where: { created_by: userId } }),
       prisma.customerOTP.deleteMany({ where: { merchant_id: userId } }),
       prisma.deviceToken.deleteMany({ where: { user_email: userEmail } }),
       prisma.notification.deleteMany({ where: { user_email: userEmail } }),

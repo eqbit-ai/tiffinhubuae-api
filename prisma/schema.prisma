@@ -117,9 +117,6 @@ model Customer {
   is_deleted          Boolean   @default(false)
   deleted_at          DateTime?
   portal_token        String?   @unique
-  referral_code       String?   @unique
-  referred_by         String?
-  family_group_id     String?
   kitchen_id          String?
   registration_source String?
   created_by          String
@@ -137,8 +134,6 @@ model Customer {
   @@index([created_by])
   @@index([is_deleted])
   @@index([portal_token])
-  @@index([referral_code])
-  @@index([family_group_id])
 }
 
 model Order {
@@ -457,21 +452,6 @@ model ConsumptionLog {
   @@index([created_by])
 }
 
-model MealRating {
-  id            String   @id @default(cuid())
-  customer_id   String
-  customer_name String?
-  order_id      String?
-  rating        Int      @default(0)
-  feedback      String?
-  meal_type     String?
-  meal_date     String?
-  created_by    String
-  created_at    DateTime @default(now())
-
-  @@index([created_by])
-  @@index([customer_id])
-}
 
 model Invoice {
   id              String   @id @default(cuid())
@@ -498,37 +478,7 @@ model Invoice {
   @@index([customer_id])
 }
 
-model Referral {
-  id                String   @id @default(cuid())
-  referrer_id       String
-  referrer_name     String?
-  referred_id       String?
-  referred_name     String?
-  referral_code     String
-  status            String?  @default("pending")
-  discount_amount   Float?   @default(0)
-  discount_applied  Boolean? @default(false)
-  created_by        String
-  created_at        DateTime @default(now())
 
-  @@index([created_by])
-  @@index([referral_code])
-}
-
-model FamilyGroup {
-  id              String   @id @default(cuid())
-  name            String
-  primary_contact String?
-  primary_phone   String?
-  billing_amount  Float?   @default(0)
-  billing_status  String?  @default("Pending")
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
-
-  @@index([created_by])
-}
 
 model Driver {
   id              String   @id @default(cuid())
@@ -586,40 +536,7 @@ model DeliveryItem {
   @@index([created_by])
 }
 
-model Container {
-  id              String   @id @default(cuid())
-  customer_id     String
-  customer_name   String?
-  container_type  String?  @default("standard")
-  given_date      DateTime?
-  given_count     Int      @default(0)
-  returned_count  Int      @default(0)
-  outstanding     Int      @default(0)
-  deposit_amount  Float?   @default(0)
-  deposit_paid    Boolean? @default(false)
-  last_reminder   DateTime?
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
 
-  @@index([created_by])
-  @@index([customer_id])
-}
-
-model ContainerLog {
-  id              String   @id @default(cuid())
-  container_id    String
-  customer_id     String
-  action          String
-  count           Int      @default(0)
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
-
-  @@index([container_id])
-  @@index([created_by])
-}
 
 model Kitchen {
   id              String   @id @default(cuid())

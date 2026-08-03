@@ -42,6 +42,10 @@ exports.TEMPLATES = {
     FEEDBACK_REQUEST: process.env.TWILIO_TPL_FEEDBACK || '',
     // 10. Registration Status — not yet created
     REGISTRATION_STATUS: process.env.TWILIO_TPL_REGISTRATION || '',
+    // 11. Customer Portal Link
+    // Body: "Hello {{name}}, here is your customer portal link: {{customer portal}}!"
+    // Variables: "name", "customer portal"
+    PORTAL_LINK: process.env.TWILIO_TPL_PORTAL_LINK || '',
 };
 // Helper to check if a template is configured
 function hasTemplate(templateName) {

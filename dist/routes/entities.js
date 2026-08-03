@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
+const weekend_1 = require("../lib/weekend");
 const router = (0, express_1.Router)();
 // Date fields that need ISO conversion per entity
 const dateFields = new Set([
@@ -12,6 +13,7 @@ const dateFields = new Set([
     'subscription_start_date', 'payment_date', 'expires_at', 'paid_at',
     'trial_end_date', 'period_start', 'period_end',
     'given_date', 'last_reminder', 'delivered_at', 'prepared_at',
+    'resolved_at', 'resolved_date',
 ]);
 // Boolean fields that may arrive as strings from CSV imports
 const booleanFields = new Set([
@@ -109,19 +111,16 @@ const entityConfig = {
     payment_history: { model: () => prisma_1.prisma.paymentHistory, ownerField: 'user_email', ownerValue: 'email' },
     payment_links: { model: () => prisma_1.prisma.paymentLink, ownerField: 'created_by', ownerValue: 'id' },
     consumption_logs: { model: () => prisma_1.prisma.consumptionLog, ownerField: 'created_by', ownerValue: 'id' },
-    meal_ratings: { model: () => prisma_1.prisma.mealRating, ownerField: 'created_by', ownerValue: 'id' },
     invoices: { model: () => prisma_1.prisma.invoice, ownerField: 'created_by', ownerValue: 'id' },
-    referrals: { model: () => prisma_1.prisma.referral, ownerField: 'created_by', ownerValue: 'id' },
-    family_groups: { model: () => prisma_1.prisma.familyGroup, ownerField: 'created_by', ownerValue: 'id' },
     drivers: { model: () => prisma_1.prisma.driver, ownerField: 'created_by', ownerValue: 'id' },
     delivery_batches: { model: () => prisma_1.prisma.deliveryBatch, ownerField: 'created_by', ownerValue: 'id' },
     delivery_items: { model: () => prisma_1.prisma.deliveryItem, ownerField: 'created_by', ownerValue: 'id' },
-    containers: { model: () => prisma_1.prisma.container, ownerField: 'created_by', ownerValue: 'id' },
-    container_logs: { model: () => prisma_1.prisma.containerLog, ownerField: 'created_by', ownerValue: 'id' },
     kitchens: { model: () => prisma_1.prisma.kitchen, ownerField: 'created_by', ownerValue: 'id' },
     prep_items: { model: () => prisma_1.prisma.prepItem, ownerField: 'created_by', ownerValue: 'id' },
     chat_messages: { model: () => prisma_1.prisma.chatMessage, ownerField: 'created_by', ownerValue: 'id' },
     one_time_orders: { model: () => prisma_1.prisma.oneTimeOrder, ownerField: 'created_by', ownerValue: 'id' },
+    device_tokens: { model: () => prisma_1.prisma.deviceToken, ownerField: 'user_id', ownerValue: 'id' },
+    system_logs: { model: () => prisma_1.prisma.systemLog, ownerField: 'created_by', ownerValue: 'id', listAll: true },
 };
 // Helper to build where clause with tenant isolation
 function buildWhere(config, user, filters = {}) {
@@ -163,7 +162,7 @@ function buildWhere(config, user, filters = {}) {
 }
 // Super admin check
 function isSuperAdmin(user) {
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
+    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
     return user?.email === DEFAULT_SUPER_ADMIN || user?.is_super_admin === true;
 }
 // ─── Admin routes (must be before /:entity wildcard) ─────────
@@ -196,9 +195,19 @@ router.put('/admin/users/:id', auth_1.authMiddleware, async (req, res) => {
         return res.status(403).json({ error: 'Forbidden' });
     }
     try {
+        const allowedFields = new Set([
+            'full_name', 'business_name', 'role', 'is_super_admin', 'special_access_type',
+            'subscription_status', 'plan_type', 'subscription_source',
+            'trial_ends_at', 'subscription_ends_at',
+        ]);
+        const updateData = {};
+        for (const field of allowedFields) {
+            if (field in req.body)
+                updateData[field] = req.body[field];
+        }
         const user = await prisma_1.prisma.user.update({
             where: { id: req.params.id },
-            data: req.body,
+            data: updateData,
         });
         const { password_hash: _, ...safeUser } = user;
         res.json(safeUser);
@@ -213,6 +222,10 @@ router.get('/:entity', auth_1.authMiddleware, async (req, res) => {
     const config = entityConfig[entity];
     if (!config)
         return res.status(404).json({ error: 'Unknown entity' });
+    // Restrict listAll entities (e.g. system_logs) to super admins
+    if (config.listAll && !isSuperAdmin(req.user)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
     try {
         const { where: whereJson, sortBy, limit, offset, all } = req.query;
         let filters = {};
@@ -222,8 +235,8 @@ router.get('/:entity', auth_1.authMiddleware, async (req, res) => {
             }
             catch { }
         }
-        // Super admins with ?all=true can bypass tenant isolation
-        const bypassTenant = all === 'true' && isSuperAdmin(req.user);
+        // Super admins with ?all=true (or listAll entities) can bypass tenant isolation
+        const bypassTenant = (all === 'true' || config.listAll) && isSuperAdmin(req.user);
         const where = bypassTenant ? filters : buildWhere(config, req.user, filters);
         // Map common Base44 field names to Prisma column names
         const fieldNameMap = {
@@ -264,11 +277,14 @@ router.get('/:entity', auth_1.authMiddleware, async (req, res) => {
                 }
             }
         }
+        const MAX_LIMIT = 1000;
+        const take = limit ? Math.min(parseInt(limit) || MAX_LIMIT, MAX_LIMIT) : MAX_LIMIT;
+        const skipN = offset ? Math.max(parseInt(offset) || 0, 0) : 0;
         const results = await config.model().findMany({
             where,
             orderBy,
-            take: limit ? parseInt(limit) : undefined,
-            skip: offset ? parseInt(offset) : undefined,
+            take,
+            skip: skipN,
         });
         res.json(addVirtualFieldsArray(results));
     }
@@ -299,7 +315,7 @@ router.get('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
     }
 });
 // POST /api/:entity
-router.post('/:entity', auth_1.authMiddleware, async (req, res) => {
+router.post('/:entity', auth_1.authMiddleware, auth_1.checkActiveSubscription, async (req, res) => {
     const config = entityConfig[req.params.entity];
     if (!config)
         return res.status(404).json({ error: 'Unknown entity' });
@@ -320,6 +336,43 @@ router.post('/:entity', auth_1.authMiddleware, async (req, res) => {
         // MenuItem: derive 'name' from 'item_name' if not provided (name is required in schema)
         if (req.params.entity === 'menu_items' && !data.name && data.item_name) {
             data.name = data.item_name;
+        }
+        // DeliveryItem: always snapshot the LIVE customer record so labels reflect the
+        // latest saved address. The frontend may send a stale snapshot (e.g. an address
+        // edited after the customer list was loaded); the Customer row is the source of truth.
+        if (req.params.entity === 'delivery_items' && data.customer_id) {
+            const customer = await prisma_1.prisma.customer.findUnique({ where: { id: data.customer_id } });
+            if (customer) {
+                // Honor weekend-skip: don't create a label / route stop on Sat or Sun for
+                // customers who have skip_weekends enabled. The weekday is derived from the
+                // delivery DATE string (timezone-independent), not the server clock, so it
+                // is correct regardless of where the server runs. Order of preference for
+                // the date: the item's own delivery_date → the batch's delivery_date →
+                // today in the merchant's timezone.
+                let deliveryDateStr = data.delivery_date;
+                if (data.batch_id) {
+                    const batch = await prisma_1.prisma.deliveryBatch.findUnique({ where: { id: data.batch_id } });
+                    if (batch?.delivery_date)
+                        deliveryDateStr = batch.delivery_date;
+                }
+                if (!deliveryDateStr)
+                    deliveryDateStr = (0, weekend_1.todayInTimezone)(req.user?.timezone);
+                if (customer.skip_weekends && (0, weekend_1.isWeekendDate)(deliveryDateStr)) {
+                    return res.status(200).json({ success: true, skipped: true, reason: 'Weekend skip enabled for this customer' });
+                }
+                const mealType = String(data.meal_type ?? customer.meal_type ?? '').toLowerCase();
+                let liveAddress = customer.address;
+                if (mealType.includes('breakfast') && customer.breakfast_address)
+                    liveAddress = customer.breakfast_address;
+                else if (mealType.includes('lunch') && customer.lunch_address)
+                    liveAddress = customer.lunch_address;
+                else if (mealType.includes('dinner') && customer.dinner_address)
+                    liveAddress = customer.dinner_address;
+                data.customer_name = customer.full_name;
+                data.customer_phone = customer.phone_number;
+                data.customer_address = liveAddress;
+                data.area = customer.area;
+            }
         }
         const record = await config.model().create({ data });
         res.status(201).json(addVirtualFields(record));
@@ -349,20 +402,44 @@ router.post('/:entity', auth_1.authMiddleware, async (req, res) => {
     }
 });
 // PUT /api/:entity/:id
-router.put('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
-    const config = entityConfig[req.params.entity];
-    if (!config)
+router.put('/:entity/:id', auth_1.authMiddleware, auth_1.checkActiveSubscription, async (req, res) => {
+    const entity = req.params.entity;
+    const id = req.params.id;
+    console.log(`[PUT] → ${entity}/${id} by user ${req.user?.id}`);
+    const config = entityConfig[entity];
+    if (!config) {
+        console.log(`[PUT] Unknown entity: ${entity}`);
         return res.status(404).json({ error: 'Unknown entity' });
+    }
     try {
-        const existing = await config.model().findUnique({ where: { id: req.params.id } });
-        if (!existing)
+        const existing = await config.model().findUnique({ where: { id } });
+        if (!existing) {
+            console.log(`[PUT] Not found: ${entity}/${id}`);
             return res.status(404).json({ error: 'Not found' });
+        }
         // Ownership check
         if (config.ownerField && !isSuperAdmin(req.user)) {
             const ownerVal = config.ownerValue === 'email' ? req.user.email : req.user.id;
             if (existing[config.ownerField] !== ownerVal) {
+                console.log(`[PUT] Access denied: ${entity}/${id} owner=${existing[config.ownerField]} user=${ownerVal}`);
                 return res.status(403).json({ error: 'Access denied' });
             }
+        }
+        // Weekend-skip enforcement (count leak): the dashboard marks a delivery by
+        // PATCHing the customer's delivered_days / meals_delivered directly, which
+        // bypasses /record-delivery's weekend guard. So strip any INCREMENT of the
+        // delivery counters when today (in the merchant's timezone) is a weekend and
+        // the customer skips weekends — a weekend delivery must never be counted.
+        // Manual corrections (decreasing the counters) are left untouched.
+        if (entity === 'customers' && existing.skip_weekends &&
+            (0, weekend_1.isWeekendDate)((0, weekend_1.todayInTimezone)(req.user?.timezone))) {
+            const b = req.body;
+            if (b.delivered_days != null && Number(b.delivered_days) > (existing.delivered_days || 0))
+                delete b.delivered_days;
+            if (b.meals_delivered != null && Number(b.meals_delivered) > (existing.meals_delivered || 0))
+                delete b.meals_delivered;
+            if (b.days_remaining != null && Number(b.days_remaining) < (existing.days_remaining ?? Number.MAX_SAFE_INTEGER))
+                delete b.days_remaining;
         }
         let updateData = { ...req.body };
         // Strip read-only / virtual / relation fields
@@ -376,12 +453,10 @@ router.put('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
         sanitizeEmptyStrings(updateData);
         coerceBooleans(updateData);
         coerceDates(updateData);
-        console.log('[PUT] entity:', req.params.entity, 'id:', req.params.id);
         console.log('[PUT] updateData keys:', Object.keys(updateData));
-        console.log('[PUT] updateData:', JSON.stringify(updateData).slice(0, 500));
         let record;
         try {
-            record = await config.model().update({ where: { id: req.params.id }, data: updateData });
+            record = await config.model().update({ where: { id }, data: updateData });
         }
         catch (innerErr) {
             console.log('[PUT] innerErr:', innerErr.message?.slice(0, 300));
@@ -390,23 +465,27 @@ router.put('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
                 const matches = innerErr.message.match(/Unknown (?:arg|argument|field) `(\w+)`/g) || [];
                 for (const m of matches) {
                     const field = m.match(/`(\w+)`/)?.[1];
-                    if (field)
+                    if (field) {
+                        console.log(`[PUT] Stripping unknown field: ${field}`);
                         delete updateData[field];
+                    }
                 }
-                record = await config.model().update({ where: { id: req.params.id }, data: updateData });
+                record = await config.model().update({ where: { id }, data: updateData });
             }
             else {
                 throw innerErr;
             }
         }
+        console.log(`[PUT] ✓ ${entity}/${id} updated`);
         res.json(addVirtualFields(record));
     }
     catch (error) {
+        console.error(`[PUT] ✗ ${entity}/${id} error:`, error.message?.slice(0, 300));
         res.status(500).json({ error: error.message });
     }
 });
 // DELETE /api/:entity/:id
-router.delete('/:entity/:id', auth_1.authMiddleware, async (req, res) => {
+router.delete('/:entity/:id', auth_1.authMiddleware, auth_1.checkActiveSubscription, async (req, res) => {
     const config = entityConfig[req.params.entity];
     if (!config)
         return res.status(404).json({ error: 'Unknown entity' });

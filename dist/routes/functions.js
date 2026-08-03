@@ -1,15 +1,22 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runAutoPaymentReminders = runAutoPaymentReminders;
 exports.runTrialExpiryCheck = runTrialExpiryCheck;
-exports.runMealRatingRequests = runMealRatingRequests;
+exports.runAutoResumePausedCustomers = runAutoResumePausedCustomers;
 const express_1 = require("express");
+const multer_1 = __importDefault(require("multer"));
 const prisma_1 = require("../lib/prisma");
 const auth_1 = require("../middleware/auth");
 const email_1 = require("../services/email");
 const whatsapp_1 = require("../services/whatsapp");
 const stripe_1 = require("../services/stripe");
+const pushNotification_1 = require("../services/pushNotification");
+const cloudinary_1 = require("../lib/cloudinary");
 const date_fns_1 = require("date-fns");
+const weekend_1 = require("../lib/weekend");
 const router = (0, express_1.Router)();
 // All routes require auth
 router.use(auth_1.authMiddleware);
@@ -33,6 +40,13 @@ router.post('/record-delivery', async (req, res) => {
         if (skips.length > 0) {
             return res.status(400).json({ error: 'Cannot deliver on skipped date', skipped: true });
         }
+        // Respect the customer's weekend-skip setting so weekends are not counted as
+        // delivered days (matches the should-deliver-today rule). The weekday is read
+        // from the order DATE string itself, so it is correct regardless of the
+        // server's timezone.
+        if (customer.skip_weekends && (0, weekend_1.isWeekendDate)(String(orderDate))) {
+            return res.status(400).json({ error: 'Weekend skip enabled for this customer', skipped: true });
+        }
         const newDeliveredDays = (customer.delivered_days || 0) + 1;
         const paidDays = customer.paid_days || (customer.is_trial ? 3 : 30);
         const daysRemaining = paidDays - newDeliveredDays;
@@ -47,7 +61,7 @@ router.post('/record-delivery', async (req, res) => {
         if (newDeliveredDays >= paidDays) {
             await prisma_1.prisma.customer.update({
                 where: { id: customerId },
-                data: { active: false, notification_sent: false },
+                data: { active: false, status: 'inactive', inactive_reason: 'service_complete', notification_sent: false },
             });
             if (customer.phone_number) {
                 try {
@@ -64,7 +78,7 @@ router.post('/record-delivery', async (req, res) => {
                 body: `<h2>Service Completed - Payment Required</h2>
           <p><strong>Customer:</strong> ${customer.full_name}</p>
           <p><strong>Days Delivered:</strong> ${newDeliveredDays} / ${paidDays}</p>
-          <p><strong>Amount Due:</strong> AED ${customer.payment_amount}</p>`,
+          <p><strong>Amount Due:</strong> ${user.currency || 'USD'} ${customer.payment_amount}</p>`,
             });
             return res.json({ success: true, delivered_days: newDeliveredDays, service_complete: true });
         }
@@ -136,7 +150,7 @@ router.post('/send-payment-reminder', auth_1.checkPremiumAccess, async (req, res
             return res.status(404).json({ error: 'Customer not found or deleted' });
         if (!customer.phone_number)
             return res.status(400).json({ error: 'Customer has no phone number' });
-        const currency = user.currency || 'AED';
+        const currency = user.currency || 'USD';
         const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment is ${customer.payment_status === 'Overdue' ? 'overdue' : 'due'}.\n\nAmount Due: ${currency} ${customer.payment_amount}\n${customer.due_date ? `Due Date: ${new Date(customer.due_date).toLocaleDateString('en-GB')}` : ''}\n\nPlease make the payment to continue your tiffin service.\n\nThank you!`;
         await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
             to: customer.phone_number,
@@ -147,7 +161,7 @@ router.post('/send-payment-reminder', auth_1.checkPremiumAccess, async (req, res
         await (0, email_1.sendEmail)({
             to: user.email,
             subject: `Payment Reminder Sent - ${customer.full_name}`,
-            body: `<h2>Payment Reminder Sent</h2><p><strong>Customer:</strong> ${customer.full_name}</p><p><strong>Amount:</strong> AED ${customer.payment_amount}</p>`,
+            body: `<h2>Payment Reminder Sent</h2><p><strong>Customer:</strong> ${customer.full_name}</p><p><strong>Amount:</strong> ${currency} ${customer.payment_amount}</p>`,
         });
         res.json({ success: true, message: 'Payment reminder sent successfully' });
     }
@@ -175,7 +189,7 @@ router.post('/send-bulk-payment-reminders', auth_1.checkPremiumAccess, async (re
                 continue;
             }
             try {
-                const bulkCurrency = user.currency || 'AED';
+                const bulkCurrency = user.currency || 'USD';
                 const message = `Payment Reminder\n\nDear ${customer.full_name},\n\nYour tiffin subscription expires in ${customer.days_remaining} days.\n\nAmount Due: ${bulkCurrency} ${customer.payment_amount}\n\nPlease renew your subscription.\n\nThank you!`;
                 await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
@@ -196,7 +210,7 @@ router.post('/send-bulk-payment-reminders', auth_1.checkPremiumAccess, async (re
     }
 });
 // ─── Create Checkout Session (platform subscription) ──────────
-router.post('/create-checkout-session', async (req, res) => {
+router.post('/create-checkout-session', auth_1.blockIfImpersonating, async (req, res) => {
     try {
         const user = req.user;
         const { priceId } = req.body;
@@ -224,7 +238,7 @@ router.post('/create-checkout-session', async (req, res) => {
     }
 });
 // ─── Cancel Subscription ─────────────────────────────────────
-router.post('/cancel-subscription', async (req, res) => {
+router.post('/cancel-subscription', auth_1.blockIfImpersonating, async (req, res) => {
     try {
         const user = req.user;
         const { reason } = req.body;
@@ -602,8 +616,7 @@ router.post('/should-deliver-today', async (req, res) => {
         });
         if (skips.length > 0)
             return res.json({ shouldDeliver: false, reason: 'Date is skipped' });
-        const dayOfWeek = checkDate.getDay();
-        if (customer.skip_weekends && (dayOfWeek === 0 || dayOfWeek === 6)) {
+        if (customer.skip_weekends && (0, weekend_1.isWeekendDate)(String(date))) {
             return res.json({ shouldDeliver: false, reason: 'Weekend skip enabled' });
         }
         res.json({ shouldDeliver: true, customer });
@@ -634,8 +647,9 @@ router.post('/calculate-end-date', async (req, res) => {
         while (deliveredCount < paidDays) {
             const dateStr = currentDate.toISOString().split('T')[0];
             const isSkipped = skipDates.has(dateStr);
-            const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
-            const skipWeekend = customer.skip_weekends && isWeekend;
+            // Use the same calendar date the loop formats above (UTC) to decide the
+            // weekday, so the weekend check can't drift from the server's local clock.
+            const skipWeekend = customer.skip_weekends && (0, weekend_1.isWeekendDate)(dateStr);
             if (!isSkipped && !skipWeekend)
                 deliveredCount++;
             currentDate.setDate(currentDate.getDate() + 1);
@@ -713,7 +727,7 @@ router.post('/check-subscription-status', async (req, res) => {
 // ─── Check Premium Access ─────────────────────────────────────
 router.post('/check-premium-access', async (req, res) => {
     const user = req.user;
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
+    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
     const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
     const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
     const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
@@ -723,7 +737,7 @@ router.post('/check-premium-access', async (req, res) => {
 router.post('/check-plan-access', async (req, res) => {
     const user = req.user;
     const { feature } = req.body;
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai';
+    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
     const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
     const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
     const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
@@ -776,8 +790,8 @@ router.post('/list-active-plans', async (_req, res) => {
             prices: [
                 {
                     id: stripe_1.STRIPE_PREMIUM_PRICE_ID || 'price_premium',
-                    unit_amount: 6999,
-                    currency: 'aed',
+                    unit_amount: 1600,
+                    currency: 'usd',
                     recurring: { interval: 'month' },
                     product: { name: 'Premium Plan' },
                 },
@@ -806,7 +820,7 @@ router.post('/send-customer-payment-reminder', auth_1.checkPremiumAccess, async 
             return res.status(404).json({ error: 'Customer not found' });
         if (!customer.phone_number)
             return res.status(400).json({ error: 'No phone number' });
-        const cCurrency = user.currency || 'AED';
+        const cCurrency = user.currency || 'USD';
         const message = `Payment Reminder\n\nHello ${customer.full_name},\n\nYour payment of ${cCurrency} ${customer.payment_amount} is due.\n\nPlease make the payment to continue service.\n\nThank you!`;
         const result = await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
             to: customer.phone_number,
@@ -829,6 +843,15 @@ router.post('/send-customer-email', async (req, res) => {
         const { to, subject, body } = req.body;
         if (!to || !subject || !body)
             return res.status(400).json({ error: 'to, subject, body required' });
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(to))
+            return res.status(400).json({ error: 'Invalid recipient email' });
+        // Verify recipient is a customer owned by the requesting merchant
+        const user = req.user;
+        const customer = await prisma_1.prisma.customer.findFirst({ where: { email: to, created_by: user.id } });
+        if (!customer)
+            return res.status(403).json({ error: 'Recipient is not your customer' });
         const result = await (0, email_1.sendEmail)({ to, subject, body });
         res.json(result);
     }
@@ -907,6 +930,46 @@ router.post('/manual-grant-access', auth_1.superAdminOnly, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+// ─── Revoke User Access (Super Admin) ─────────────────────────
+router.post('/revoke-user-access', auth_1.superAdminOnly, async (req, res) => {
+    try {
+        const { targetUserEmail, reason } = req.body;
+        if (!targetUserEmail) {
+            return res.status(400).json({ error: 'targetUserEmail is required' });
+        }
+        const targetUser = await prisma_1.prisma.user.findUnique({ where: { email: targetUserEmail } });
+        if (!targetUser)
+            return res.status(404).json({ error: 'User not found' });
+        // Don't allow revoking another super admin (or the configured super admin email).
+        const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
+        if (targetUser.is_super_admin || targetUser.email === SUPER_ADMIN_EMAIL) {
+            return res.status(403).json({ error: 'Cannot revoke access for a super admin account' });
+        }
+        // Reverse any admin grant / trial / paid status so the app blocks access.
+        // checkActiveSubscription blocks on subscription_status 'expired'/'cancelled',
+        // and special_access_type bypasses it — so clear that too.
+        await prisma_1.prisma.user.update({
+            where: { id: targetUser.id },
+            data: {
+                subscription_status: 'expired',
+                plan_type: 'none',
+                subscription_source: 'admin',
+                is_paid: false,
+                special_access_type: 'none',
+                trial_ends_at: null,
+                trial_cancelled_at: new Date(),
+                current_period_end: null,
+                subscription_ends_at: null,
+                last_payment_status: reason ? `admin_revoked: ${String(reason).slice(0, 200)}` : 'admin_revoked',
+            },
+        });
+        console.log(`[ACCESS REVOKED] Admin ${req.user.email} revoked access for ${targetUserEmail}${reason ? ` (reason: ${reason})` : ''}`);
+        res.json({ success: true, message: `Revoked access for ${targetUserEmail}` });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 // ─── Manage User (Super Admin) ────────────────────────────────
 router.post('/manage-user', auth_1.superAdminOnly, async (req, res) => {
     try {
@@ -928,22 +991,9 @@ router.post('/manage-user', auth_1.superAdminOnly, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-// ─── Impersonate User (Super Admin) ──────────────────────────
-router.post('/impersonate-user', auth_1.superAdminOnly, async (req, res) => {
-    try {
-        const { targetUserEmail } = req.body;
-        const targetUser = await prisma_1.prisma.user.findUnique({ where: { email: targetUserEmail } });
-        if (!targetUser)
-            return res.status(404).json({ error: 'User not found' });
-        const { password_hash: _, ...safeUser } = targetUser;
-        res.json({ success: true, user: safeUser });
-    }
-    catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
+// Impersonate endpoint is in auth.ts — this duplicate was removed
 // ─── Create Customer Payment Checkout ─────────────────────────
-router.post('/create-customer-payment-checkout', async (req, res) => {
+router.post('/create-customer-payment-checkout', auth_1.blockIfImpersonating, async (req, res) => {
     try {
         const user = req.user;
         if (!user.stripe_connect_account_id || !user.payment_account_connected) {
@@ -972,7 +1022,7 @@ router.post('/create-customer-payment-checkout', async (req, res) => {
             payment_method_types: ['card'],
             line_items: [{
                     price_data: {
-                        currency: 'aed',
+                        currency: (user.currency || 'usd').toLowerCase(),
                         product_data: { name: description || `Payment for ${customer.full_name}` },
                         unit_amount: Math.round(amount * 100),
                     },
@@ -991,7 +1041,7 @@ router.post('/create-customer-payment-checkout', async (req, res) => {
                 customer_id: customerId,
                 customer_name: customer.full_name,
                 amount,
-                currency: 'AED',
+                currency: user.currency || 'USD',
                 description: description || `Payment for ${customer.full_name}`,
                 status: 'pending',
                 stripe_checkout_session_id: session.id,
@@ -1009,7 +1059,7 @@ router.post('/create-customer-payment-checkout', async (req, res) => {
     }
 });
 // ─── Generate Customer Payment Link ──────────────────────────
-router.post('/generate-customer-payment-link', async (req, res) => {
+router.post('/generate-customer-payment-link', auth_1.blockIfImpersonating, async (req, res) => {
     try {
         const user = req.user;
         const { customerId, amount: reqAmount, description } = req.body;
@@ -1031,7 +1081,7 @@ router.post('/generate-customer-payment-link', async (req, res) => {
         const feePercentage = user.fee_percentage || 3.5;
         const platformFeeAmount = Math.round((amount * feePercentage) / 100);
         const netAmount = amount - platformFeeAmount;
-        const currencyCode = (user.currency || 'aed').toLowerCase();
+        const currencyCode = (user.currency || 'usd').toLowerCase();
         const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
         const appUrl = origin.replace(/\/$/, '');
         const session = await stripe_1.stripe.checkout.sessions.create({
@@ -1062,7 +1112,7 @@ router.post('/generate-customer-payment-link', async (req, res) => {
                 customer_id: customerId,
                 customer_name: customer.full_name,
                 amount,
-                currency: (user.currency || 'AED').toUpperCase(),
+                currency: (user.currency || 'USD').toUpperCase(),
                 description: description || `Payment for ${customer.full_name}`,
                 status: 'pending',
                 stripe_checkout_session_id: session.id,
@@ -1078,7 +1128,7 @@ router.post('/generate-customer-payment-link', async (req, res) => {
             try {
                 await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                     to: customer.phone_number,
-                    message: `Hello ${customer.full_name}!\n\nHere is your payment link for ${(user.currency || 'AED').toUpperCase()} ${amount}:\n${session.url}\n\nThank you!`,
+                    message: `Hello ${customer.full_name}!\n\nHere is your payment link for ${(user.currency || 'USD').toUpperCase()} ${amount}:\n${session.url}\n\nThank you!`,
                 });
             }
             catch (e) {
@@ -1092,7 +1142,7 @@ router.post('/generate-customer-payment-link', async (req, res) => {
     }
 });
 // ─── Create Stripe Connect Account ───────────────────────────
-router.post('/create-stripe-connect-account', async (req, res) => {
+router.post('/create-stripe-connect-account', auth_1.blockIfImpersonating, async (req, res) => {
     try {
         const user = req.user;
         const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -1108,7 +1158,7 @@ router.post('/create-stripe-connect-account', async (req, res) => {
             'NOK': 'NO', 'DKK': 'DK', 'CHF': 'CH', 'PLN': 'PL', 'CZK': 'CZ',
             'HUF': 'HU', 'RON': 'RO', 'BGN': 'BG', 'HRK': 'HR', 'TRY': 'TR',
         };
-        const country = currencyToCountry[(user.currency || 'AED').toUpperCase()] || 'AE';
+        const country = currencyToCountry[(user.currency || 'USD').toUpperCase()] || 'US';
         let accountId = user.stripe_connect_account_id;
         // If user already has a Connect account, reuse it
         if (!accountId) {
@@ -1187,7 +1237,7 @@ router.post('/get-stripe-account-status', async (req, res) => {
     }
 });
 // ─── Disconnect Payment Account ──────────────────────────────
-router.post('/disconnect-payment-account', async (req, res) => {
+router.post('/disconnect-payment-account', auth_1.blockIfImpersonating, async (req, res) => {
     try {
         const user = req.user;
         await prisma_1.prisma.user.update({
@@ -1272,7 +1322,7 @@ async function runAutoPaymentReminders() {
                 continue;
             try {
                 const amount = customer.payment_amount;
-                const currency = user.currency || 'aed';
+                const currency = user.currency || 'usd';
                 const feePercentage = user.fee_percentage || 3.5;
                 const platformFeeAmount = Math.round((amount * feePercentage) / 100);
                 const session = await stripe_1.stripe.checkout.sessions.create({
@@ -1318,6 +1368,25 @@ async function runAutoPaymentReminders() {
                     contentVariables: { 'name': customer.full_name || 'Customer', 'end date': endDateFormatted, 'currency': currency.toUpperCase(), 'amount': String(amount), 'payment URL': session.url },
                 });
                 await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { reminder_before_sent: true } });
+                // DB notification for merchant dashboard
+                await prisma_1.prisma.notification.create({
+                    data: {
+                        user_email: user.email,
+                        title: 'Payment Reminder Sent',
+                        message: `Auto-reminder sent to ${customer.full_name} — subscription ends today.`,
+                        type: 'payment_reminder',
+                        notification_type: 'Payment Reminder',
+                        customer_id: customer.id,
+                        customer_name: customer.full_name,
+                        phone_number: customer.phone_number,
+                        amount_to_collect: amount,
+                        days_left: 0,
+                    },
+                });
+                // Push notification to merchant
+                (0, pushNotification_1.sendPushToUser)(user.id, 'Payment Reminder Sent', `Reminder sent to ${customer.full_name} — ${currency.toUpperCase()} ${amount} due`, {
+                    type: 'payment_reminder', customerId: customer.id,
+                }).catch(() => { });
                 beforeCount++;
             }
             catch (err) {
@@ -1340,7 +1409,7 @@ async function runAutoPaymentReminders() {
                 continue;
             try {
                 const amount = customer.payment_amount;
-                const currency = user.currency || 'aed';
+                const currency = user.currency || 'usd';
                 const feePercentage = user.fee_percentage || 3.5;
                 const platformFeeAmount = Math.round((amount * feePercentage) / 100);
                 const session = await stripe_1.stripe.checkout.sessions.create({
@@ -1389,6 +1458,25 @@ async function runAutoPaymentReminders() {
                     where: { id: customer.id },
                     data: { status: 'inactive', inactive_reason: 'non_payment', active: false, reminder_after_sent: true, payment_status: 'Overdue' },
                 });
+                // DB notification for merchant dashboard
+                await prisma_1.prisma.notification.create({
+                    data: {
+                        user_email: user.email,
+                        title: 'Payment Overdue — Customer Deactivated',
+                        message: `${customer.full_name} is 3 days overdue (${currency.toUpperCase()} ${amount}). Customer has been deactivated.`,
+                        type: 'payment_overdue',
+                        notification_type: 'Payment Reminder',
+                        customer_id: customer.id,
+                        customer_name: customer.full_name,
+                        phone_number: customer.phone_number,
+                        amount_to_collect: amount,
+                        days_left: -3,
+                    },
+                });
+                // Push notification to merchant about overdue payment
+                (0, pushNotification_1.sendPushToUser)(user.id, 'Payment Overdue', `${customer.full_name} is overdue — ${currency.toUpperCase()} ${amount}. Customer deactivated.`, {
+                    type: 'payment_due', customerId: customer.id,
+                }).catch(() => { });
                 afterCount++;
             }
             catch (err) {
@@ -1416,13 +1504,14 @@ router.post('/auto-customer-payment-reminders', async (req, res) => {
 async function runTrialExpiryCheck() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    // Find trial customers expiring today or already expired
+    // Only expire trials whose end date is strictly BEFORE today (not today itself)
+    // A trial ending on 31/03 should remain active the entire day of 31/03
     const expiringTrials = await prisma_1.prisma.customer.findMany({
         where: {
             is_trial: true,
             trial_converted: { not: true },
             active: true,
-            trial_end_date: { lte: new Date() },
+            trial_end_date: { lt: today },
             phone_number: { not: null },
         },
     });
@@ -1436,7 +1525,7 @@ async function runTrialExpiryCheck() {
             if (!user)
                 continue;
             // Only premium merchants can use SMS features
-            const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@eqbit.ai') || user.is_super_admin === true;
+            const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me') || user.is_super_admin === true;
             const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
             const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
             if (!hasPremium)
@@ -1453,7 +1542,7 @@ async function runTrialExpiryCheck() {
                         payment_method_types: ['card'],
                         line_items: [{
                                 price_data: {
-                                    currency: user.currency || 'aed',
+                                    currency: user.currency || 'usd',
                                     product_data: { name: 'Tiffin Subscription - Convert from Trial' },
                                     unit_amount: Math.round(amount * 100),
                                 },
@@ -1470,7 +1559,7 @@ async function runTrialExpiryCheck() {
                     paymentLink = `\n\nSubscribe now: ${session.url}`;
                 }
             }
-            const trialCurrency = (user.currency || 'AED').toUpperCase();
+            const trialCurrency = (user.currency || 'USD').toUpperCase();
             await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
                 to: customer.phone_number,
                 message: `Hello ${customer.full_name},\n\nYour free trial has ended! We hope you enjoyed our tiffin service.\n\nTo continue without interruption, please subscribe.\n\nAmount: ${trialCurrency} ${customer.payment_amount}/month${paymentLink}\n\nThank you!`,
@@ -1519,6 +1608,24 @@ async function runTrialExpiryCheck() {
           `,
                 }).catch(err => console.error(`[TrialExpiry Email] Failed for merchant ${user.email}:`, err));
             }
+            // DB notification for merchant dashboard
+            await prisma_1.prisma.notification.create({
+                data: {
+                    user_email: user.email,
+                    title: 'Trial Ended',
+                    message: `${customer.full_name}'s 3-day trial has ended. Follow up to convert to paid subscription.`,
+                    type: 'trial_expiry',
+                    notification_type: 'info',
+                    customer_id: customer.id,
+                    customer_name: customer.full_name,
+                    phone_number: customer.phone_number,
+                    amount_to_collect: customer.payment_amount,
+                },
+            });
+            // Push notification to merchant about trial expiry
+            (0, pushNotification_1.sendPushToUser)(user.id, 'Trial Ended', `${customer.full_name}'s trial has expired. Follow up to convert.`, {
+                type: 'trial_expiry', customerId: customer.id,
+            }).catch(() => { });
             sentCount++;
         }
         catch (err) {
@@ -1526,99 +1633,6 @@ async function runTrialExpiryCheck() {
         }
     }
     return { success: true, trialReminders: sentCount };
-}
-// ─── Send Meal Rating Request (manual) ──────────────────────────
-router.post('/send-meal-rating-request', auth_1.checkPremiumAccess, async (req, res) => {
-    try {
-        const user = req.user;
-        const { customerIds } = req.body;
-        if (!customerIds || !Array.isArray(customerIds) || customerIds.length === 0) {
-            return res.status(400).json({ error: 'customerIds array required' });
-        }
-        const customers = await prisma_1.prisma.customer.findMany({
-            where: { id: { in: customerIds }, created_by: user.id, is_deleted: false, active: true, phone_number: { not: null } },
-        });
-        let sentCount = 0;
-        const errors = [];
-        for (const customer of customers) {
-            if (!customer.phone_number)
-                continue;
-            try {
-                await prisma_1.prisma.mealRating.create({
-                    data: {
-                        customer_id: customer.id,
-                        customer_name: customer.full_name,
-                        rating: 0,
-                        meal_type: customer.meal_type,
-                        meal_date: (0, date_fns_1.format)(new Date(), 'yyyy-MM-dd'),
-                        created_by: user.id,
-                    },
-                });
-                const result = await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
-                    to: customer.phone_number,
-                    message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
-                });
-                if (!result.success && result.reason === 'Message limit reached') {
-                    errors.push(`Message limit reached after ${sentCount} sends`);
-                    break;
-                }
-                if (result.success)
-                    sentCount++;
-            }
-            catch (err) {
-                errors.push(`Failed for ${customer.full_name}: ${err.message}`);
-            }
-        }
-        res.json({ success: true, sent: sentCount, errors });
-    }
-    catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-// ─── Auto Meal Rating Request (kept for manual trigger only) ──────
-async function runMealRatingRequests() {
-    const fifteenDaysAgo = new Date();
-    fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
-    // Find all active customers with phone numbers
-    const customers = await prisma_1.prisma.customer.findMany({
-        where: { is_deleted: false, active: true, phone_number: { not: null } },
-    });
-    let sentCount = 0;
-    for (const customer of customers) {
-        if (!customer.phone_number)
-            continue;
-        try {
-            // Skip if we already sent a rating request in the last 15 days
-            const recentRating = await prisma_1.prisma.mealRating.findFirst({
-                where: {
-                    customer_id: customer.id,
-                    created_at: { gte: fifteenDaysAgo },
-                },
-            });
-            if (recentRating)
-                continue;
-            // Create a placeholder rating entry
-            await prisma_1.prisma.mealRating.create({
-                data: {
-                    customer_id: customer.id,
-                    customer_name: customer.full_name,
-                    rating: 0,
-                    meal_type: customer.meal_type,
-                    meal_date: (0, date_fns_1.format)(new Date(), 'yyyy-MM-dd'),
-                    created_by: customer.created_by,
-                },
-            });
-            await (0, whatsapp_1.sendMerchantWhatsApp)(customer.created_by, {
-                to: customer.phone_number,
-                message: `Hello ${customer.full_name},\n\nWe'd love your feedback on our tiffin service!\n\nPlease rate from 1 to 5:\n1 - Poor\n2 - Fair\n3 - Good\n4 - Very Good\n5 - Excellent\n\nReply with just the number (1-5) and any feedback.\n\nThank you!`,
-            });
-            sentCount++;
-        }
-        catch (err) {
-            console.error(`[MealRating] Failed for customer ${customer.id}:`, err);
-        }
-    }
-    return { success: true, ratingRequests: sentCount };
 }
 // ─── Generate Portal Link ─────────────────────────────────────
 router.post('/generate-portal-link', async (req, res) => {
@@ -1633,71 +1647,32 @@ router.post('/generate-portal-link', async (req, res) => {
             token = require('crypto').randomBytes(24).toString('hex');
             await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { portal_token: token } });
         }
-        const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
-        const portalUrl = `${origin}/CustomerPortal?token=${token}`;
-        res.json({ success: true, portalUrl, token });
+        const origin = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const portalUrl = `${origin}/portal/login?merchant=${user.id}`;
+        const appLink = `tiffinhub://portal/login/${user.id}`;
+        // Send portal link via WhatsApp if customer has phone
+        let whatsappSent = false;
+        if (customer.phone_number) {
+            try {
+                await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
+                    to: customer.phone_number,
+                    message: `Hello ${customer.full_name}!\n\nHere is your customer portal link:\n${portalUrl}\n\nHave our app? Open directly:\n${appLink}\n\nYou can view your subscription, skip dates, and manage your account.\n\nThank you!`,
+                    templateName: 'PORTAL_LINK',
+                    contentVariables: { 'name': customer.full_name || 'Customer', 'customer portal': portalUrl },
+                });
+                whatsappSent = true;
+            }
+            catch (e) {
+                console.error('[Functions] Portal WhatsApp send failed:', e.message);
+            }
+        }
+        res.json({ success: true, portalUrl, whatsappSent });
     }
     catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 // ─── Generate Referral Code ───────────────────────────────────
-router.post('/generate-referral-code', async (req, res) => {
-    try {
-        const user = req.user;
-        const { customerId } = req.body;
-        const customer = await prisma_1.prisma.customer.findFirst({ where: { id: customerId, created_by: user.id, is_deleted: false } });
-        if (!customer)
-            return res.status(404).json({ error: 'Customer not found' });
-        let code = customer.referral_code;
-        if (!code) {
-            code = customer.full_name.replace(/\s+/g, '').substring(0, 4).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
-            await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { referral_code: code } });
-        }
-        res.json({ success: true, referralCode: code });
-    }
-    catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-// ─── Apply Referral Code ──────────────────────────────────────
-router.post('/apply-referral', async (req, res) => {
-    try {
-        const user = req.user;
-        const { customerId, referralCode } = req.body;
-        if (!referralCode)
-            return res.status(400).json({ error: 'Referral code required' });
-        const referrer = await prisma_1.prisma.customer.findFirst({
-            where: { referral_code: referralCode, created_by: user.id, is_deleted: false },
-        });
-        if (!referrer)
-            return res.status(404).json({ error: 'Invalid referral code' });
-        const customer = await prisma_1.prisma.customer.findFirst({ where: { id: customerId, created_by: user.id, is_deleted: false } });
-        if (!customer)
-            return res.status(404).json({ error: 'Customer not found' });
-        if (customer.id === referrer.id)
-            return res.status(400).json({ error: 'Cannot refer yourself' });
-        if (customer.referred_by)
-            return res.status(400).json({ error: 'Customer already has a referral' });
-        await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { referred_by: referrer.id } });
-        await prisma_1.prisma.referral.create({
-            data: {
-                referrer_id: referrer.id,
-                referrer_name: referrer.full_name,
-                referred_id: customer.id,
-                referred_name: customer.full_name,
-                referral_code: referralCode,
-                status: 'completed',
-                created_by: user.id,
-            },
-        });
-        res.json({ success: true, referrer: referrer.full_name });
-    }
-    catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-// ─── Approve Customer Registration ─────────────────────────────
 router.post('/approve-customer', async (req, res) => {
     try {
         const user = req.user;
@@ -1738,7 +1713,7 @@ router.post('/approve-customer', async (req, res) => {
                     const platformFeeAmount = Math.round((amount * feePercentage) / 100);
                     const netAmount = amount - platformFeeAmount;
                     const unitAmount = Math.round(amount * 100); // in fils/cents
-                    const currencyCode = (user.currency || 'aed').toLowerCase();
+                    const currencyCode = (user.currency || 'usd').toLowerCase();
                     const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
                     const appUrl = origin.replace(/\/$/, '');
                     const session = await stripe_1.stripe.checkout.sessions.create({
@@ -1770,7 +1745,7 @@ router.post('/approve-customer', async (req, res) => {
                             customer_id: customerId,
                             customer_name: customer.full_name,
                             amount,
-                            currency: (user.currency || 'AED').toUpperCase(),
+                            currency: (user.currency || 'USD').toUpperCase(),
                             description: 'Trial conversion payment',
                             status: 'pending',
                             stripe_checkout_session_id: session.id,
@@ -1961,5 +1936,123 @@ router.post('/auto-deduct-on-delivery', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+// ─── Share Driver Access ─────────────────────────────────────
+router.post('/share-driver-access', async (req, res) => {
+    try {
+        const user = req.user;
+        const { driverId } = req.body;
+        const driver = await prisma_1.prisma.driver.findFirst({
+            where: { id: driverId, created_by: user.id },
+        });
+        if (!driver)
+            return res.status(404).json({ error: 'Driver not found' });
+        if (!driver.phone)
+            return res.status(400).json({ error: 'Driver has no phone number' });
+        if (!driver.access_code)
+            return res.status(400).json({ error: 'Driver has no access code. Please generate one first.' });
+        const appLink = 'tiffinhub://driver/login';
+        let whatsappSent = false;
+        try {
+            await (0, whatsapp_1.sendMerchantWhatsApp)(user.id, {
+                to: driver.phone,
+                message: `Hello ${driver.name}!\n\nYour driver access code is: ${driver.access_code}\n\nOpen the TiffinHub app and enter this code to view your deliveries.\n\n${appLink}`,
+            });
+            whatsappSent = true;
+        }
+        catch (e) {
+            console.error('[Functions] Driver access WhatsApp send failed:', e.message);
+        }
+        res.json({ success: true, whatsappSent });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// ─── Menu Image Upload ──────────────────────────────────────────
+const MENU_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
+const menuImageUpload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+        const dotIdx = file.originalname.lastIndexOf('.');
+        const ext = dotIdx >= 0 ? file.originalname.slice(dotIdx).toLowerCase() : '';
+        if (file.mimetype.startsWith('image/') && MENU_IMAGE_EXTENSIONS.has(ext)) {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('Only image files (jpg, png, gif, webp) are allowed'));
+        }
+    },
+});
+router.post('/upload-menu-image', menuImageUpload.single('image'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No image uploaded' });
+        }
+        const url = await (0, cloudinary_1.uploadToCloudinary)(req.file.buffer, 'tiffinhub/menu', `menu-${Date.now()}`);
+        res.json({ url });
+    }
+    catch (error) {
+        console.error('[Menu Image Upload] Error:', error);
+        res.status(500).json({ error: error.message || 'Failed to upload image' });
+    }
+});
+// ─── Auto-Resume Paused Customers (cron) ─────────────────────────
+async function runAutoResumePausedCustomers() {
+    const todayStr = (0, date_fns_1.format)(new Date(), 'yyyy-MM-dd');
+    // Find all customers whose pause_resume_date has passed and are still paused
+    const pausedCustomers = await prisma_1.prisma.customer.findMany({
+        where: {
+            is_paused: true,
+            pause_resume_date: { not: null },
+        },
+    });
+    // Filter to those whose resume date is today or earlier
+    const toResume = pausedCustomers.filter(c => {
+        if (!c.pause_resume_date)
+            return false;
+        return c.pause_resume_date <= todayStr;
+    });
+    let resumedCount = 0;
+    for (const customer of toResume) {
+        try {
+            await prisma_1.prisma.customer.update({
+                where: { id: customer.id },
+                data: {
+                    is_paused: false,
+                    pause_start_date: null,
+                    pause_resume_date: null,
+                    status: 'active',
+                },
+            });
+            // Find the merchant to notify
+            const merchant = await prisma_1.prisma.user.findUnique({ where: { id: customer.created_by } });
+            if (merchant) {
+                // Create DB notification for merchant
+                await prisma_1.prisma.notification.create({
+                    data: {
+                        user_email: merchant.email,
+                        title: 'Customer Auto-Resumed',
+                        message: `${customer.full_name}'s pause period ended and their subscription has been automatically resumed.`,
+                        type: 'resume',
+                        notification_type: 'info',
+                        customer_id: customer.id,
+                        customer_name: customer.full_name,
+                        phone_number: customer.phone_number,
+                    },
+                });
+                // Push notification to merchant
+                (0, pushNotification_1.sendPushToUser)(merchant.id, 'Subscription Resumed', `${customer.full_name}'s pause ended — service auto-resumed`, {
+                    type: 'delivery', customerId: customer.id,
+                }).catch(() => { });
+            }
+            resumedCount++;
+        }
+        catch (err) {
+            console.error(`[AutoResume] Failed for customer ${customer.id}:`, err);
+        }
+    }
+    return { success: true, resumed: resumedCount, checked: toResume.length };
+}
 exports.default = router;
 //# sourceMappingURL=functions.js.map

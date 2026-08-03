@@ -7,6 +7,7 @@ const email_1 = require("../services/email");
 const stripe_1 = require("../services/stripe");
 const whatsapp_1 = require("../services/whatsapp");
 const auth_1 = require("../middleware/auth");
+const pushNotification_1 = require("../services/pushNotification");
 const router = (0, express_1.Router)();
 // ─────────────────────────────────────────────────────────────────
 // OTP AUTHENTICATION ENDPOINTS
@@ -22,27 +23,43 @@ function normalizePhone(phone) {
 // POST /api/portal/auth/request-otp - Request OTP for login
 router.post('/auth/request-otp', async (req, res) => {
     try {
-        const { phone_number, merchant_id } = req.body;
-        if (!phone_number || !merchant_id) {
-            return res.status(400).json({ error: 'Phone number and merchant ID are required' });
-        }
-        // Verify merchant exists
-        const merchant = await prisma_1.prisma.user.findUnique({ where: { id: merchant_id } });
-        if (!merchant) {
-            return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
+        const { phone_number, merchant_id: providedMerchantId } = req.body;
+        if (!phone_number) {
+            return res.status(400).json({ error: 'Phone number is required' });
         }
         // Normalize and try multiple phone formats to handle +/- prefix mismatches
         const cleaned = normalizePhone(phone_number);
         const withPlus = cleaned.startsWith('+') ? cleaned : '+' + cleaned;
         const withoutPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
-        // Find customer by phone number for this merchant (try both formats)
-        const customer = await prisma_1.prisma.customer.findFirst({
-            where: {
-                phone_number: { in: [cleaned, withPlus, withoutPlus] },
-                created_by: merchant_id,
-                is_deleted: false,
-            },
-        });
+        let resolvedMerchantId = providedMerchantId;
+        let customer = null;
+        if (resolvedMerchantId) {
+            // merchant_id provided (deep link flow) — verify merchant then find customer
+            const merchant = await prisma_1.prisma.user.findUnique({ where: { id: resolvedMerchantId } });
+            if (!merchant) {
+                return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
+            }
+            customer = await prisma_1.prisma.customer.findFirst({
+                where: {
+                    phone_number: { in: [cleaned, withPlus, withoutPlus] },
+                    created_by: resolvedMerchantId,
+                    is_deleted: false,
+                },
+            });
+        }
+        else {
+            // No merchant_id — auto-find customer across all merchants
+            customer = await prisma_1.prisma.customer.findFirst({
+                where: {
+                    phone_number: { in: [cleaned, withPlus, withoutPlus] },
+                    is_deleted: false,
+                },
+                orderBy: { created_at: 'desc' },
+            });
+            if (customer) {
+                resolvedMerchantId = customer.created_by;
+            }
+        }
         if (!customer) {
             // Return success anyway to prevent phone enumeration
             return res.json({ success: true, message: 'If a customer exists with this phone number, an OTP has been sent' });
@@ -54,7 +71,7 @@ router.post('/auth/request-otp', async (req, res) => {
         const recentOTPs = await prisma_1.prisma.customerOTP.count({
             where: {
                 customer_id: customer.id,
-                merchant_id,
+                merchant_id: resolvedMerchantId,
                 created_at: { gte: oneHourAgo },
             },
         });
@@ -68,13 +85,13 @@ router.post('/auth/request-otp', async (req, res) => {
             data: {
                 phone_number: customerPhone,
                 otp_code: otpCode,
-                merchant_id,
+                merchant_id: resolvedMerchantId,
                 customer_id: customer.id,
                 expires_at: expiresAt,
             },
         });
         // Send OTP via WhatsApp (counts toward merchant's 400 limit)
-        const smsResult = await (0, whatsapp_1.sendMerchantWhatsApp)(merchant_id, {
+        const smsResult = await (0, whatsapp_1.sendMerchantWhatsApp)(resolvedMerchantId, {
             to: customerPhone,
             message: `Your TiffinHub login code is: ${otpCode}\n\nThis code expires in 10 minutes.\nDo not share this code with anyone.`,
             templateName: 'OTP_LOGIN',
@@ -93,36 +110,56 @@ router.post('/auth/request-otp', async (req, res) => {
 // POST /api/portal/auth/verify-otp - Verify OTP and return JWT
 router.post('/auth/verify-otp', async (req, res) => {
     try {
-        const { phone_number, merchant_id, otp } = req.body;
-        if (!phone_number || !merchant_id || !otp) {
-            return res.status(400).json({ error: 'Phone number, merchant ID, and OTP are required' });
+        const { phone_number, merchant_id: providedMerchantId, otp } = req.body;
+        if (!phone_number || !otp) {
+            return res.status(400).json({ error: 'Phone number and OTP are required' });
         }
-        // Normalize phone to find customer first
+        // Normalize phone
         const cleaned = normalizePhone(phone_number);
         const withPlus = cleaned.startsWith('+') ? cleaned : '+' + cleaned;
         const withoutPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
-        // Find the customer to get their ID
-        const customer = await prisma_1.prisma.customer.findFirst({
-            where: {
-                phone_number: { in: [cleaned, withPlus, withoutPlus] },
-                created_by: merchant_id,
-                is_deleted: false,
-            },
-        });
-        if (!customer) {
-            return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
+        let otpRecord = null;
+        let customer = null;
+        let resolvedMerchantId = providedMerchantId;
+        if (resolvedMerchantId) {
+            // merchant_id provided — existing flow
+            customer = await prisma_1.prisma.customer.findFirst({
+                where: {
+                    phone_number: { in: [cleaned, withPlus, withoutPlus] },
+                    created_by: resolvedMerchantId,
+                    is_deleted: false,
+                },
+            });
+            if (!customer) {
+                return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
+            }
+            otpRecord = await prisma_1.prisma.customerOTP.findFirst({
+                where: {
+                    customer_id: customer.id,
+                    merchant_id: resolvedMerchantId,
+                    verified: false,
+                    expires_at: { gt: new Date() },
+                },
+                orderBy: { created_at: 'desc' },
+            });
         }
-        // Find the most recent OTP for this customer/merchant
-        const otpRecord = await prisma_1.prisma.customerOTP.findFirst({
-            where: {
-                customer_id: customer.id,
-                merchant_id,
-                verified: false,
-                expires_at: { gt: new Date() },
-            },
-            orderBy: { created_at: 'desc' },
-        });
-        if (!otpRecord) {
+        else {
+            // No merchant_id — look up the OTP record by phone + code directly
+            otpRecord = await prisma_1.prisma.customerOTP.findFirst({
+                where: {
+                    phone_number: { in: [cleaned, withPlus, withoutPlus] },
+                    otp_code: otp,
+                    verified: false,
+                    expires_at: { gt: new Date() },
+                },
+                orderBy: { created_at: 'desc' },
+            });
+            if (otpRecord) {
+                resolvedMerchantId = otpRecord.merchant_id;
+                customer = await prisma_1.prisma.customer.findUnique({ where: { id: otpRecord.customer_id } });
+            }
+        }
+        if (!otpRecord || !customer) {
             return res.status(400).json({ error: 'OTP expired or not found. Please request a new one.' });
         }
         // Check max attempts
@@ -148,9 +185,9 @@ router.post('/auth/verify-otp', async (req, res) => {
             data: { last_login_at: new Date() },
         });
         // Generate JWT
-        const token = (0, auth_1.generateCustomerToken)(customer.id, merchant_id);
+        const token = (0, auth_1.generateCustomerToken)(customer.id, resolvedMerchantId);
         // Get merchant info
-        const merchant = await prisma_1.prisma.user.findUnique({ where: { id: merchant_id } });
+        const merchant = await prisma_1.prisma.user.findUnique({ where: { id: resolvedMerchantId } });
         res.json({
             success: true,
             token,
@@ -161,7 +198,7 @@ router.post('/auth/verify-otp', async (req, res) => {
             },
             merchant: {
                 business_name: merchant?.business_name || 'Tiffin Service',
-                currency: merchant?.currency || 'AED',
+                currency: merchant?.currency || 'USD',
             },
         });
     }
@@ -183,6 +220,9 @@ router.get('/me', auth_1.customerAuthMiddleware, async (req, res) => {
                 full_name: customer.full_name,
                 phone_number: customer.phone_number,
                 address: customer.address,
+                breakfast_address: customer.breakfast_address,
+                lunch_address: customer.lunch_address,
+                dinner_address: customer.dinner_address,
                 area: customer.area,
                 meal_type: customer.meal_type,
                 payment_amount: customer.payment_amount,
@@ -202,11 +242,15 @@ router.get('/me', auth_1.customerAuthMiddleware, async (req, res) => {
                 pause_resume_date: customer.pause_resume_date,
                 status: customer.status,
                 active: customer.active,
+                menu_style: customer.menu_style || 'Set Menu',
             },
             merchant: {
                 id: customer.merchant_id,
                 business_name: merchant?.business_name || 'Tiffin Service',
-                currency: merchant?.currency || 'AED',
+                currency: merchant?.currency || 'USD',
+                logo_url: merchant?.logo_url || null,
+                brand_primary_color: merchant?.brand_primary_color || '#6366f1',
+                brand_accent_color: merchant?.brand_accent_color || '#f97316',
                 payment_account_connected: merchant?.payment_account_connected && merchant?.payment_verification_status === 'verified',
             },
         });
@@ -220,7 +264,7 @@ router.put('/me', auth_1.customerAuthMiddleware, async (req, res) => {
     try {
         const customer = req.customer;
         // Whitelist of allowed fields to update
-        const allowedFields = ['address', 'area', 'roti_quantity', 'rice_type', 'dietary_preference', 'special_notes', 'skip_weekends'];
+        const allowedFields = ['address', 'breakfast_address', 'lunch_address', 'dinner_address', 'area', 'roti_quantity', 'rice_type', 'dietary_preference', 'special_notes', 'skip_weekends'];
         const updateData = {};
         for (const field of allowedFields) {
             if (req.body[field] !== undefined) {
@@ -245,7 +289,26 @@ router.put('/me', auth_1.customerAuthMiddleware, async (req, res) => {
         // Notify merchant about profile changes
         const merchant = await prisma_1.prisma.user.findUnique({ where: { id: customer.created_by } });
         if (merchant) {
+            const changedFieldsList = Object.keys(updateData).map(f => f.replace(/_/g, ' ')).join(', ');
             const changedFields = Object.keys(updateData).map(f => `<li><strong>${f.replace(/_/g, ' ')}:</strong> ${updateData[f]}</li>`).join('');
+            // DB notification
+            await prisma_1.prisma.notification.create({
+                data: {
+                    user_email: merchant.email,
+                    title: 'Customer Profile Updated',
+                    message: `${customer.full_name} updated: ${changedFieldsList}`,
+                    type: 'profile_update',
+                    notification_type: 'info',
+                    customer_id: customer.id,
+                    customer_name: customer.full_name,
+                    phone_number: customer.phone_number,
+                },
+            });
+            // Push notification
+            (0, pushNotification_1.sendPushToUserByEmail)(merchant.email, 'Profile Updated', `${customer.full_name} updated their profile: ${changedFieldsList}`, {
+                type: 'profile_update', customerId: customer.id,
+            }).catch(() => { });
+            // Email
             (0, email_1.sendEmail)({
                 to: merchant.email,
                 subject: `Customer Profile Updated - ${customer.full_name}`,
@@ -308,7 +371,7 @@ router.post('/renew', auth_1.customerAuthMiddleware, async (req, res) => {
         if (amount <= 0) {
             return res.status(400).json({ error: 'Invalid payment amount' });
         }
-        const currency = (merchant.currency || 'aed').toLowerCase();
+        const currency = (merchant.currency || 'usd').toLowerCase();
         const feePercentage = merchant.fee_percentage || 3.5;
         const platformFeeAmount = Math.round((amount * feePercentage) / 100);
         const netAmount = amount - platformFeeAmount;
@@ -422,6 +485,10 @@ router.post('/pause', auth_1.customerAuthMiddleware, async (req, res) => {
                     customer_name: customer.full_name,
                 },
             });
+            // Push notification to merchant
+            (0, pushNotification_1.sendPushToUserByEmail)(merchant.email, 'Subscription Paused', `${customer.full_name} paused from ${pause_start} to ${pause_end}`, {
+                type: 'delivery', customerId: customer.id,
+            }).catch(() => { });
         }
         res.json({
             success: true,
@@ -450,6 +517,25 @@ router.post('/resume', auth_1.customerAuthMiddleware, async (req, res) => {
                 status: 'active',
             },
         });
+        // Notify merchant about resume
+        const merchant = await prisma_1.prisma.user.findUnique({ where: { id: customer.created_by } });
+        if (merchant) {
+            await prisma_1.prisma.notification.create({
+                data: {
+                    user_email: merchant.email,
+                    title: 'Subscription Resumed',
+                    message: `${customer.full_name} has resumed their subscription from the customer portal.`,
+                    type: 'resume',
+                    notification_type: 'info',
+                    customer_id: customer.id,
+                    customer_name: customer.full_name,
+                    phone_number: customer.phone_number,
+                },
+            });
+            (0, pushNotification_1.sendPushToUserByEmail)(merchant.email, 'Subscription Resumed', `${customer.full_name} resumed their subscription`, {
+                type: 'delivery', customerId: customer.id,
+            }).catch(() => { });
+        }
         res.json({ success: true, message: 'Subscription resumed successfully' });
     }
     catch (error) {
@@ -460,20 +546,40 @@ router.post('/resume', auth_1.customerAuthMiddleware, async (req, res) => {
 router.get('/menu', auth_1.customerAuthMiddleware, async (req, res) => {
     try {
         const customer = req.customer;
-        const menuItems = await prisma_1.prisma.menuItem.findMany({
+        // Orderable items (à la carte or any item with price > 0)
+        const orderableItems = await prisma_1.prisma.menuItem.findMany({
             where: { created_by: customer.merchant_id, is_active: true, price: { gt: 0 } },
             orderBy: [{ category: 'asc' }, { name: 'asc' }],
         });
+        // Today's set menu (informational)
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const today = dayNames[new Date().getDay()];
+        const todaysSetMenu = await prisma_1.prisma.menuItem.findMany({
+            where: {
+                created_by: customer.merchant_id,
+                is_active: true,
+                day_of_week: today,
+                menu_type: { not: 'ala_carte' },
+            },
+            orderBy: [{ meal_type: 'asc' }, { name: 'asc' }],
+        });
         const merchant = await prisma_1.prisma.user.findUnique({ where: { id: customer.merchant_id } });
         res.json({
-            menu: menuItems.map((m) => ({
+            menu: orderableItems.map((m) => ({
                 id: m.id,
-                name: m.name,
+                name: m.name || m.item_name,
                 description: m.description,
                 price: m.price,
                 category: m.category,
                 meal_type: m.meal_type,
                 image_url: m.image_url,
+            })),
+            todays_set_menu: todaysSetMenu.map((m) => ({
+                id: m.id,
+                name: m.name || m.item_name,
+                description: m.description,
+                meal_type: m.meal_type,
+                diet_type: m.diet_type,
             })),
             stripe_connected: !!(merchant?.stripe_connect_account_id && merchant?.payment_account_connected && merchant?.payment_verification_status === 'verified'),
         });
@@ -554,7 +660,7 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
         if (totalAmount <= 0) {
             return res.status(400).json({ error: 'Order total must be greater than 0' });
         }
-        const currency = (merchant.currency || 'aed').toLowerCase();
+        const currency = (merchant.currency || 'usd').toLowerCase();
         // Cash payment — no Stripe, no platform fee
         if (isCash) {
             const order = await prisma_1.prisma.oneTimeOrder.create({
@@ -586,6 +692,10 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
                     customer_name: customer.full_name,
                 },
             });
+            // Push notification to merchant
+            (0, pushNotification_1.sendPushToUserByEmail)(merchant.email, 'New Order', `${customer.full_name} placed a cash order — ${currency.toUpperCase()} ${totalAmount.toFixed(2)}`, {
+                type: 'new_order',
+            }).catch(() => { });
             // Email merchant about new extra order
             const itemsList = orderItems.map((it) => `${it.name} x${it.quantity} — ${currency.toUpperCase()} ${(it.price * it.quantity).toFixed(2)}`).join('<br/>');
             (0, email_1.sendEmail)({
@@ -764,6 +874,60 @@ router.delete('/skips/:skipId', auth_1.customerAuthMiddleware, async (req, res) 
         res.status(500).json({ error: error.message });
     }
 });
+// GET /api/portal/driver-location — get current driver location for customer's active delivery
+router.get('/driver-location', auth_1.customerAuthMiddleware, async (req, res) => {
+    try {
+        const customer = req.customer;
+        const today = new Date().toISOString().split('T')[0];
+        // Find today's pending delivery item for this customer
+        const deliveryItem = await prisma_1.prisma.deliveryItem.findFirst({
+            where: {
+                customer_id: customer.id,
+                status: 'pending',
+                created_by: customer.merchant_id,
+            },
+            orderBy: { created_at: 'desc' },
+        });
+        if (!deliveryItem) {
+            return res.status(404).json({ error: 'No active delivery found' });
+        }
+        // Get the batch to find the driver
+        const batch = await prisma_1.prisma.deliveryBatch.findFirst({
+            where: {
+                id: deliveryItem.batch_id,
+                delivery_date: today,
+            },
+        });
+        if (!batch || !batch.driver_id) {
+            return res.status(404).json({ error: 'No driver assigned to your delivery' });
+        }
+        // Get the driver's latest location
+        const location = await prisma_1.prisma.driverLocation.findFirst({
+            where: { driver_id: batch.driver_id, is_active: true },
+            orderBy: { created_at: 'desc' },
+        });
+        if (!location) {
+            return res.status(404).json({ error: 'Driver location not available yet' });
+        }
+        // Get driver name
+        const driver = await prisma_1.prisma.driver.findUnique({
+            where: { id: batch.driver_id },
+            select: { name: true, phone: true },
+        });
+        res.json({
+            latitude: location.latitude,
+            longitude: location.longitude,
+            heading: location.heading,
+            speed: location.speed,
+            updated_at: location.updated_at,
+            driver_name: driver?.name || 'Driver',
+            driver_phone: driver?.phone || null,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 // ─────────────────────────────────────────────────────────────────
 // PUBLIC ENDPOINTS (No auth required)
 // ─────────────────────────────────────────────────────────────────
@@ -775,7 +939,7 @@ router.get('/join/:merchantId', async (req, res) => {
             return res.status(404).json({ error: 'Merchant not found' });
         res.json({
             business_name: merchant.business_name || 'Tiffin Service',
-            currency: merchant.currency || 'AED',
+            currency: merchant.currency || 'USD',
             payment_account_connected: merchant.payment_account_connected && merchant.payment_verification_status === 'verified',
         });
     }
@@ -825,7 +989,7 @@ router.post('/join/:merchantId', async (req, res) => {
         if (!isTrial && merchant.stripe_connect_account_id && merchant.payment_account_connected && merchant.payment_verification_status === 'verified') {
             const amount = req.body.payment_amount || 0;
             if (amount > 0) {
-                const currency = (merchant.currency || 'aed').toLowerCase();
+                const currency = (merchant.currency || 'usd').toLowerCase();
                 const feePercentage = merchant.fee_percentage || 3.5;
                 const platformFeeAmount = Math.round((amount * feePercentage) / 100);
                 const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -886,6 +1050,10 @@ ${address ? `<p><strong>Address:</strong> ${address}</p>` : ''}
                 phone_number,
             },
         });
+        // Push notification to merchant
+        (0, pushNotification_1.sendPushToUserByEmail)(merchant.email, 'New Customer', `${full_name} registered via public link (${isTrial ? 'Trial' : 'Direct'})`, {
+            type: 'new_customer', customerId: customer.id,
+        }).catch(() => { });
         res.json({ success: true, customerId: customer.id, type: isTrial ? 'trial' : 'direct' });
     }
     catch (error) {
