@@ -10,6 +10,7 @@ import { sendPushToUser, sendPushToUserByEmail } from '../services/pushNotificat
 import { uploadToCloudinary } from '../lib/cloudinary';
 import { addDays, format } from 'date-fns';
 import { isWeekendDate } from '../lib/weekend';
+import { calculatePlatformFee, DEFAULT_FEE_PERCENTAGE } from '../lib/fees';
 
 const router = Router();
 
@@ -1202,9 +1203,10 @@ router.post('/create-customer-payment-checkout', blockIfImpersonating, async (re
     const customer = await prisma.customer.findFirst({ where: { id: customerId, created_by: user.id } });
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-    const feePercentage = user.fee_percentage || 3.5;
-    const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-    const netAmount = amount - platformFeeAmount;
+    const platformFee = calculatePlatformFee(amount, user.fee_percentage);
+    const feePercentage = platformFee.feePercentage;
+    const platformFeeAmount = platformFee.fee;
+    const netAmount = platformFee.net;
 
     const origin = req.headers.origin || (req.headers.referer as string)?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
     const appUrl = origin.replace(/\/$/, '');
@@ -1221,7 +1223,7 @@ router.post('/create-customer-payment-checkout', blockIfImpersonating, async (re
         quantity: 1,
       }],
       payment_intent_data: {
-        application_fee_amount: Math.round(platformFeeAmount * 100),
+        application_fee_amount: platformFee.feeMinor,
         metadata: { customer_id: customerId, merchant_email: user.email },
       },
       metadata: { customer_id: customerId, customer_owner_email: user.email, amount: amount.toString() },
@@ -1274,9 +1276,10 @@ router.post('/generate-customer-payment-link', blockIfImpersonating, async (req:
     const amount = reqAmount || customer.payment_amount || 0;
     if (amount <= 0) return res.status(400).json({ error: 'Invalid payment amount' });
 
-    const feePercentage = user.fee_percentage || 3.5;
-    const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-    const netAmount = amount - platformFeeAmount;
+    const platformFee = calculatePlatformFee(amount, user.fee_percentage);
+    const feePercentage = platformFee.feePercentage;
+    const platformFeeAmount = platformFee.fee;
+    const netAmount = platformFee.net;
     const currencyCode = (user.currency || 'usd').toLowerCase();
 
     const origin = req.headers.origin || (req.headers.referer as string)?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -1294,7 +1297,7 @@ router.post('/generate-customer-payment-link', blockIfImpersonating, async (req:
         quantity: 1,
       }],
       payment_intent_data: {
-        application_fee_amount: Math.round(platformFeeAmount * 100),
+        application_fee_amount: platformFee.feeMinor,
         metadata: { customer_id: customerId, merchant_email: user.email },
       },
       metadata: {
@@ -1435,7 +1438,7 @@ router.post('/get-stripe-account-status', async (req: AuthRequest, res) => {
       accountId: account.id,
       account_id: account.id,
       bankAccountLast4,
-      feePercentage: (user as any).fee_percentage || 3.5,
+      feePercentage: (user as any).fee_percentage ?? DEFAULT_FEE_PERCENTAGE,
       feeConsentDate: (user as any).fee_consent_accepted_at,
     });
   } catch (error: any) {
@@ -1541,8 +1544,9 @@ export async function runAutoPaymentReminders() {
       try {
         const amount = customer.payment_amount;
         const currency = (user as any).currency || 'usd';
-        const feePercentage = (user as any).fee_percentage || 3.5;
-        const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+        const platformFee = calculatePlatformFee(amount, (user as any).fee_percentage);
+        const feePercentage = platformFee.feePercentage;
+        const platformFeeAmount = platformFee.fee;
 
         const session = await stripe.checkout.sessions.create({
           mode: 'payment',
@@ -1556,7 +1560,7 @@ export async function runAutoPaymentReminders() {
             quantity: 1,
           }],
           payment_intent_data: {
-            application_fee_amount: Math.round(platformFeeAmount * 100),
+            application_fee_amount: platformFee.feeMinor,
             metadata: { customer_id: customer.id, merchant_email: user.email },
           },
           metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
@@ -1637,8 +1641,9 @@ export async function runAutoPaymentReminders() {
       try {
         const amount = customer.payment_amount;
         const currency = (user as any).currency || 'usd';
-        const feePercentage = (user as any).fee_percentage || 3.5;
-        const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+        const platformFee = calculatePlatformFee(amount, (user as any).fee_percentage);
+        const feePercentage = platformFee.feePercentage;
+        const platformFeeAmount = platformFee.fee;
 
         const session = await stripe.checkout.sessions.create({
           mode: 'payment',
@@ -1652,7 +1657,7 @@ export async function runAutoPaymentReminders() {
             quantity: 1,
           }],
           payment_intent_data: {
-            application_fee_amount: Math.round(platformFeeAmount * 100),
+            application_fee_amount: platformFee.feeMinor,
             metadata: { customer_id: customer.id, merchant_email: user.email },
           },
           metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
@@ -1773,8 +1778,9 @@ export async function runTrialExpiryCheck() {
       if (user.stripe_connect_account_id && user.payment_account_connected && user.payment_verification_status === 'verified') {
         const amount = customer.payment_amount || 0;
         if (amount > 0) {
-          const feePercentage = (user as any).fee_percentage || 3.5;
-          const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+          const platformFee = calculatePlatformFee(amount, (user as any).fee_percentage);
+          const feePercentage = platformFee.feePercentage;
+          const platformFeeAmount = platformFee.fee;
           const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
           const session = await stripe.checkout.sessions.create({
@@ -1789,7 +1795,7 @@ export async function runTrialExpiryCheck() {
               quantity: 1,
             }],
             payment_intent_data: {
-              application_fee_amount: Math.round(platformFeeAmount * 100),
+              application_fee_amount: platformFee.feeMinor,
               metadata: { customer_id: customer.id, merchant_email: user.email },
             },
             metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
@@ -2038,9 +2044,10 @@ router.post('/approve-customer', async (req: AuthRequest, res) => {
       const amount = customer.payment_amount || 0;
       if (amount > 0) {
         try {
-          const feePercentage = user.fee_percentage || 3.5;
-          const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-          const netAmount = amount - platformFeeAmount;
+          const platformFee = calculatePlatformFee(amount, user.fee_percentage);
+          const feePercentage = platformFee.feePercentage;
+          const platformFeeAmount = platformFee.fee;
+          const netAmount = platformFee.net;
           const unitAmount = Math.round(amount * 100); // in fils/cents
           const currencyCode = (user.currency || 'usd').toLowerCase();
 
@@ -2059,7 +2066,7 @@ router.post('/approve-customer', async (req: AuthRequest, res) => {
               quantity: 1,
             }],
             payment_intent_data: {
-              application_fee_amount: Math.round(platformFeeAmount * 100),
+              application_fee_amount: platformFee.feeMinor,
               metadata: { customer_id: customerId, merchant_email: user.email },
             },
             metadata: {
