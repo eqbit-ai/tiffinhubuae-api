@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startCronJobs = startCronJobs;
 exports.runDeliveryPhotoCleanup = runDeliveryPhotoCleanup;
+exports.runCustomerDaysMaintenance = runCustomerDaysMaintenance;
 exports.runMerchantTrialExpiry = runMerchantTrialExpiry;
 const node_cron_1 = __importDefault(require("node-cron"));
 const prisma_1 = require("./lib/prisma");
@@ -36,6 +37,14 @@ function startCronJobs() {
         }
         catch (error) {
             console.error('[Cron] Merchant trial expiry failed:', error);
+        }
+        console.log('[Cron] Running customer days maintenance...');
+        try {
+            const result = await runCustomerDaysMaintenance();
+            console.log('[Cron] Customer days maintenance complete:', result);
+        }
+        catch (error) {
+            console.error('[Cron] Customer days maintenance failed:', error);
         }
         console.log('[Cron] Running auto-resume for paused customers...');
         try {
@@ -95,6 +104,73 @@ async function runDeliveryPhotoCleanup() {
         where: { created_at: { lt: cutoff } },
     });
     return { photosCleared: cleaned, totalPhotos: items.length, locationsDeleted: locationResult.count };
+}
+/**
+ * Daily customer maintenance.
+ *
+ * This previously lived in a useEffect on the Dashboard, which meant opening
+ * the dashboard issued one PUT per customer (hundreds for a busy merchant,
+ * enough to trip the rate limiter), deactivated expired customers, and sent
+ * reminder emails — all as a side effect of rendering a page. Viewing a report
+ * should not mutate business state, so it runs here once a day instead.
+ */
+async function runCustomerDaysMaintenance() {
+    const now = new Date();
+    const customers = await prisma_1.prisma.customer.findMany({
+        where: { is_deleted: false, end_date: { not: null } },
+    });
+    // Notification is keyed by the merchant's email, while Customer.created_by
+    // holds their user id — resolve once rather than per customer.
+    const merchants = await prisma_1.prisma.user.findMany({ select: { id: true, email: true } });
+    const emailByUserId = new Map(merchants.map((m) => [m.id, m.email]));
+    let daysUpdated = 0;
+    let deactivated = 0;
+    let remindersFlagged = 0;
+    for (const customer of customers) {
+        if (!customer.end_date)
+            continue;
+        // Same calculation the Dashboard used: whole days until end_date.
+        const daysRemaining = Math.floor((new Date(customer.end_date).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        const data = {};
+        if (daysRemaining !== customer.days_remaining) {
+            data.days_remaining = daysRemaining;
+            daysUpdated++;
+        }
+        if (daysRemaining <= 0 && customer.active) {
+            data.active = false;
+            deactivated++;
+        }
+        // Three days out, once per subscription period.
+        const merchantEmail = emailByUserId.get(customer.created_by);
+        if (daysRemaining === 3 && !customer.notification_sent && merchantEmail) {
+            try {
+                await prisma_1.prisma.notification.create({
+                    data: {
+                        user_email: merchantEmail,
+                        title: 'Payment Reminder',
+                        notification_type: 'Payment Reminder',
+                        message: `Payment reminder: ${customer.full_name}'s subscription expires in 3 days.`,
+                        customer_id: customer.id,
+                        customer_name: customer.full_name,
+                        days_left: 3,
+                        amount_to_collect: customer.payment_amount,
+                        phone_number: customer.phone_number,
+                        is_read: false,
+                        email_sent: false,
+                    },
+                });
+                data.notification_sent = true;
+                remindersFlagged++;
+            }
+            catch (err) {
+                console.error(`[Maintenance] Notification failed for ${customer.id}:`, err);
+            }
+        }
+        if (Object.keys(data).length > 0) {
+            await prisma_1.prisma.customer.update({ where: { id: customer.id }, data });
+        }
+    }
+    return { scanned: customers.length, daysUpdated, deactivated, remindersFlagged };
 }
 async function runMerchantTrialExpiry() {
     const result = await prisma_1.prisma.user.updateMany({
