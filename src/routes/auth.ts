@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
-import { generateToken, authMiddleware, superAdminOnly, AuthRequest } from '../middleware/auth';
+import { generateToken, authMiddleware, superAdminOnly, AuthRequest, blockIfImpersonating } from '../middleware/auth';
 import { sendEmail } from '../services/email';
 
 const router = Router();
@@ -227,6 +227,34 @@ router.post('/impersonate', authMiddleware, superAdminOnly, async (req: AuthRequ
     const targetUser = await prisma.user.findUnique({ where: { email } });
     if (!targetUser) return res.status(404).json({ error: 'User not found' });
 
+    // One admin must not be able to step into another admin's session and
+    // inherit their powers. Impersonating yourself is pointless and would just
+    // strand you in a 4-hour restricted token.
+    const targetIsAdmin = targetUser.is_super_admin === true
+      || targetUser.email === (process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me');
+    if (targetIsAdmin) {
+      return res.status(403).json({ error: 'Cannot impersonate an administrator' });
+    }
+    if (targetUser.id === req.user!.id) {
+      return res.status(400).json({ error: 'Cannot impersonate yourself' });
+    }
+
+    // This was a console.log only. Railway's logs are ephemeral, so there was no
+    // durable answer to "which admin opened which merchant's account, and when"
+    // — the one question that matters when a super admin can read every
+    // customer's name, phone number and address. Recorded in SystemLog, which
+    // merchants cannot write to or delete.
+    await prisma.systemLog.create({
+      data: {
+        log_type: 'impersonation_start',
+        severity: 'high',
+        source: 'POST /api/auth/impersonate',
+        message: `${req.user!.email} started impersonating ${targetUser.email}`,
+        affected_user: targetUser.email,
+        created_by: req.user!.id,
+      },
+    }).catch((err: any) => console.error('[Impersonate] audit write failed:', err.message));
+
     console.log(`[IMPERSONATION] Admin ${req.user!.email} impersonated ${email} at ${new Date().toISOString()}`);
 
     // Token includes impersonatedBy — backend can block destructive actions
@@ -240,7 +268,58 @@ router.post('/impersonate', authMiddleware, superAdminOnly, async (req: AuthRequ
 });
 
 // DELETE /api/auth/delete-account
-router.delete('/delete-account', authMiddleware, async (req: AuthRequest, res) => {
+// POST /api/auth/end-impersonation — hand back a fresh admin token
+//
+// Exiting used to work by stashing the admin's own 30-day token in
+// sessionStorage for the duration and putting it back afterwards. That leaves a
+// full-privilege credential sitting in browser storage throughout a session
+// spent inside someone else's account, reachable by any script running on the
+// page. The impersonation token already names its issuer, so the server can just
+// mint a fresh one and the admin token never has to be stored at all.
+router.post('/end-impersonation', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const impersonatedBy = (req.user as any)?.impersonatedBy;
+    if (!impersonatedBy) {
+      return res.status(400).json({ error: 'Not an impersonation session' });
+    }
+
+    const admin = await prisma.user.findUnique({ where: { id: impersonatedBy } });
+    const stillAdmin = admin && (
+      admin.is_super_admin === true ||
+      admin.email === (process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me')
+    );
+    // Re-checked rather than trusted: if the account lost its admin rights during
+    // the session, it must not get them back on the way out.
+    if (!stillAdmin) {
+      return res.status(403).json({ error: 'Original account is no longer an administrator' });
+    }
+
+    await prisma.systemLog.create({
+      data: {
+        log_type: 'impersonation_end',
+        severity: 'medium',
+        source: 'POST /api/auth/end-impersonation',
+        message: `${admin!.email} stopped impersonating ${req.user!.email}`,
+        affected_user: req.user!.email,
+        created_by: admin!.id,
+      },
+    }).catch((err: any) => console.error('[EndImpersonation] audit write failed:', err.message));
+
+    const token = generateToken(admin!.id);
+    const { password_hash: _, ...safeUser } = admin!;
+    res.json({ token, user: safeUser });
+  } catch (error: any) {
+    console.error('[EndImpersonation] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// blockIfImpersonating is the whole point here: this permanently deletes every
+// customer, order, menu item and invoice the account owns. It carried only
+// authMiddleware, so an admin impersonating a merchant could destroy that
+// merchant's entire business from the Settings page, irreversibly, with nothing
+// but an ephemeral console line to show for it.
+router.delete('/delete-account', authMiddleware, blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
     const userEmail = req.user!.email;
