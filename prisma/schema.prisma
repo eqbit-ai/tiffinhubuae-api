@@ -8,124 +8,126 @@ datasource db {
 }
 
 model User {
-  id                        String    @id @default(cuid())
-  email                     String    @unique
-  password_hash             String
-  full_name                 String?
-  role                      String    @default("user")
-  phone                     String?
-  business_name             String?
-  logo_url                  String?
-  subscription_status       String?   @default("trial")
-  plan_type                 String?   @default("trial")
-  subscription_source       String?   @default("trial")
-  trial_ends_at             DateTime?
-  trial_cancelled_at        DateTime?
-  subscription_ends_at      DateTime?
-  current_period_end        DateTime?
-  next_billing_date         DateTime?
-  cancel_at_period_end      Boolean?  @default(false)
-  cancellation_reason       String?
-  cancelled_at              DateTime?
-  is_paid                   Boolean   @default(false)
-  last_payment_status       String?
-  stripe_customer_id        String?
-  stripe_subscription_id    String?
-  stripe_connect_account_id String?
-  payment_account_connected Boolean?  @default(false)
-  payment_verification_status String? @default("pending")
-  fee_consent_accepted      Boolean?  @default(false)
-  fee_percentage            Float?    @default(3.5)
-  whatsapp_sent_count       Int       @default(0)
-  whatsapp_limit            Int       @default(400)
-  whatsapp_notifications_enabled Boolean? @default(false)
-  whatsapp_number           String?
-  currency                  String?   @default("USD")
-  language                  String?   @default("en")
-  timezone                  String?   @default("UTC")
-  country                   String?
-  brand_primary_color       String?   @default("#6366f1")
-  brand_accent_color        String?   @default("#f97316")
-  custom_domain             String?
-  reset_token               String?
-  reset_token_expires       DateTime?
-  is_super_admin            Boolean   @default(false)
-  special_access_type       String?
-  created_at                DateTime  @default(now())
-  updated_at                DateTime  @updatedAt
+  id                             String    @id @default(cuid())
+  email                          String    @unique
+  password_hash                  String
+  full_name                      String?
+  role                           String    @default("user")
+  phone                          String?
+  business_name                  String?
+  logo_url                       String?
+  subscription_status            String?   @default("trial")
+  plan_type                      String?   @default("trial")
+  subscription_source            String?   @default("trial")
+  trial_ends_at                  DateTime?
+  trial_cancelled_at             DateTime?
+  subscription_ends_at           DateTime?
+  current_period_end             DateTime?
+  next_billing_date              DateTime?
+  cancel_at_period_end           Boolean?  @default(false)
+  cancellation_reason            String?
+  cancelled_at                   DateTime?
+  is_paid                        Boolean   @default(false)
+  last_payment_status            String?
+  stripe_customer_id             String?
+  stripe_subscription_id         String?
+  stripe_connect_account_id      String?
+  payment_account_connected      Boolean?  @default(false)
+  payment_verification_status    String?   @default("pending")
+  fee_consent_accepted           Boolean?  @default(false)
+  fee_percentage                 Float?    @default(3.5)
+  whatsapp_sent_count            Int       @default(0)
+  whatsapp_limit                 Int       @default(400)
+  whatsapp_notifications_enabled Boolean?  @default(false)
+  whatsapp_number                String?
+  currency                       String?   @default("USD")
+  language                       String?   @default("en")
+  timezone                       String?   @default("UTC")
+  country                        String?
+  brand_primary_color            String?   @default("#6366f1")
+  brand_accent_color             String?   @default("#f97316")
+  custom_domain                  String?
+  reset_token                    String?
+  reset_token_expires            DateTime?
+  is_super_admin                 Boolean   @default(false)
+  special_access_type            String?
+  created_at                     DateTime  @default(now())
+  updated_at                     DateTime  @updatedAt
 
-  customers     Customer[]
-  orders        Order[]
-  menuItems     MenuItem[]
-  tiffinSkips   TiffinSkip[]
-  ingredients   Ingredient[]
-  recipes       Recipe[]
-  suppliers     Supplier[]
-  purchases     Purchase[]
-  wastages      Wastage[]
-  activityLogs  ActivityLog[]
-  paymentLinks  PaymentLink[]
+  customers        Customer[]
+  orders           Order[]
+  menuItems        MenuItem[]
+  tiffinSkips      TiffinSkip[]
+  ingredients      Ingredient[]
+  recipes          Recipe[]
+  suppliers        Supplier[]
+  purchases        Purchase[]
+  wastages         Wastage[]
+  activityLogs     ActivityLog[]
+  tiffinAttributes TiffinAttribute[]
+  paymentLinks     PaymentLink[]
 }
 
 model Customer {
-  id                  String    @id @default(cuid())
-  full_name           String
-  phone_number        String?
-  email               String?
-  address             String?
-  breakfast_address   String?
-  lunch_address       String?
-  dinner_address      String?
-  area                String?
-  meal_type           String?
-  menu_style          String?   @default("Set Menu")
-  payment_amount      Float?    @default(0)
-  payment_status      String?   @default("Pending")
-  due_date            DateTime?
-  last_payment_date   DateTime?
-  last_payment_amount Float?
-  active              Boolean   @default(true)
-  status              String?   @default("active")
-  inactive_reason     String?
-  start_date          DateTime?
-  end_date            DateTime?
-  paid_days           Int?      @default(30)
-  delivered_days      Int?      @default(0)
-  days_remaining      Int?      @default(30)
-  meals_delivered     Int?      @default(0)
-  tiffin_balance      Int?      @default(0)
+  id                   String    @id @default(cuid())
+  full_name            String
+  phone_number         String?
+  email                String?
+  address              String?
+  breakfast_address    String?
+  lunch_address        String?
+  dinner_address       String?
+  area                 String?
+  meal_type            String?
+  menu_style           String?   @default("Set Menu")
+  payment_amount       Float?    @default(0)
+  payment_status       String?   @default("Pending")
+  due_date             DateTime?
+  last_payment_date    DateTime?
+  last_payment_amount  Float?
+  active               Boolean   @default(true)
+  status               String?   @default("active")
+  inactive_reason      String?
+  start_date           DateTime?
+  end_date             DateTime?
+  paid_days            Int?      @default(30)
+  delivered_days       Int?      @default(0)
+  days_remaining       Int?      @default(30)
+  meals_delivered      Int?      @default(0)
+  tiffin_balance       Int?      @default(0)
   roti_quantity        Int?      @default(2)
-  rice_type           String?   @default("None")
-  special_notes       String?
-  dietary_preference  String?   @default("Both")
-  skip_weekends       Boolean?  @default(false)
-  pause_start         DateTime?
-  pause_end           DateTime?
-  pause_start_date    String?
-  pause_resume_date   String?
-  original_end_date   String?
-  total_pause_days    Int?      @default(0)
-  pause_history       Json?
-  notification_sent   Boolean?  @default(false)
-  reminder_before_sent Boolean? @default(false)
-  reminder_after_sent  Boolean? @default(false)
-  notes               String?
-  is_trial            Boolean?  @default(false)
-  trial_end_date      DateTime?
-  trial_converted     Boolean?  @default(false)
-  is_paused           Boolean?  @default(false)
-  is_deleted          Boolean   @default(false)
-  deleted_at          DateTime?
-  portal_token        String?   @unique
-  kitchen_id          String?
-  registration_source String?
-  created_by          String
-  created_at          DateTime  @default(now())
-  updated_at          DateTime  @updatedAt
+  rice_type            String?   @default("None")
+  special_notes        String?
+  dietary_preference   String?   @default("Both")
+  skip_weekends        Boolean?  @default(false)
+  pause_start          DateTime?
+  pause_end            DateTime?
+  pause_start_date     String?
+  pause_resume_date    String?
+  original_end_date    String?
+  total_pause_days     Int?      @default(0)
+  pause_history        Json?
+  attribute_values     Json? // { [tiffin_attribute_id]: value }
+  notification_sent    Boolean?  @default(false)
+  reminder_before_sent Boolean?  @default(false)
+  reminder_after_sent  Boolean?  @default(false)
+  notes                String?
+  is_trial             Boolean?  @default(false)
+  trial_end_date       DateTime?
+  trial_converted      Boolean?  @default(false)
+  is_paused            Boolean?  @default(false)
+  is_deleted           Boolean   @default(false)
+  deleted_at           DateTime?
+  portal_token         String?   @unique
+  kitchen_id           String?
+  registration_source  String?
+  created_by           String
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
 
-  last_login_at       DateTime?
+  last_login_at DateTime?
 
-  creator       User          @relation(fields: [created_by], references: [id])
+  creator       User           @relation(fields: [created_by], references: [id])
   orders        Order[]
   tiffinSkips   TiffinSkip[]
   paymentLinks  PaymentLink[]
@@ -137,19 +139,19 @@ model Customer {
 }
 
 model Order {
-  id              String   @id @default(cuid())
-  customer_id     String
-  customer_name   String?
-  meal_type       String?
-  delivery_date   String?
-  order_date      String?
-  delivery_status       String?  @default("pending")
-  status                String   @default("pending")
+  id                    String    @id @default(cuid())
+  customer_id           String
+  customer_name         String?
+  meal_type             String?
+  delivery_date         String?
+  order_date            String?
+  delivery_status       String?   @default("pending")
+  status                String    @default("pending")
   out_for_delivery_time String?
   delivery_photo        String?
   delivery_time         String?
-  delivered_by          String?   // driver name for the round, recorded at mark-time
-  delivery_note         String?   // why an individual delivery failed
+  delivered_by          String? // driver name for the round, recorded at mark-time
+  delivery_note         String? // why an individual delivery failed
   // A "Lunch + Dinner" customer is one Order row but two physical deliveries.
   // delivery_status alone could not express "lunch went out, dinner has not",
   // so each run is stamped separately and delivery_status is derived from them.
@@ -157,21 +159,21 @@ model Order {
   dinner_delivered_at   DateTime?
   items_delivered       String?
   special_instructions  String?
-  amount                Float?   @default(0)
+  amount                Float?    @default(0)
   notes                 String?
   created_by            String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
 
-  customer User     @relation(fields: [created_by], references: [id])
+  customer    User     @relation(fields: [created_by], references: [id])
   customerRef Customer @relation(fields: [customer_id], references: [id])
 
-  @@index([created_by])
-  @@index([customer_id])
-  @@index([delivery_date])
   // One order per customer, per day, per meal plan. Added after 26% of rows
   // turned out to be duplicates from a read-then-write race in the UI.
   @@unique([created_by, customer_id, order_date, meal_type], map: "Order_customer_date_meal_key")
+  @@index([created_by])
+  @@index([customer_id])
+  @@index([delivery_date])
 }
 
 model MenuItem {
@@ -181,7 +183,7 @@ model MenuItem {
   description String?
   price       Float?   @default(0)
   category    String?
-  menu_type   String?   @default("set_menu")
+  menu_type   String?  @default("set_menu")
   image_url   String?
   meal_type   String?
   calories    String?
@@ -272,7 +274,7 @@ model Ingredient {
   // multiplies it by the day's real meal count and deducts. Null means "not
   // tracked" — that ingredient is simply skipped rather than assumed zero.
   usage_per_tiffin    Float?
-  last_deducted_date  String?   // guards against deducting the same day twice
+  last_deducted_date  String? // guards against deducting the same day twice
   last_purchase_date  String?
   created_by          String
   created_at          DateTime @default(now())
@@ -285,19 +287,19 @@ model Ingredient {
 }
 
 model Recipe {
-  id              String   @id @default(cuid())
-  name            String
-  description     String?
-  meal_type       String?
-  ingredients     Json?
-  is_active       Boolean  @default(true)
-  servings        Int?     @default(1)
-  version         Int?     @default(1)
-  total_cost      Float?   @default(0)
-  cost_per_serving Float?  @default(0)
-  created_by      String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id               String   @id @default(cuid())
+  name             String
+  description      String?
+  meal_type        String?
+  ingredients      Json?
+  is_active        Boolean  @default(true)
+  servings         Int?     @default(1)
+  version          Int?     @default(1)
+  total_cost       Float?   @default(0)
+  cost_per_serving Float?   @default(0)
+  created_by       String
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
 
   creator User @relation(fields: [created_by], references: [id])
 
@@ -305,17 +307,17 @@ model Recipe {
 }
 
 model Supplier {
-  id              String   @id @default(cuid())
-  name            String
-  phone           String?
-  contact_number  String?
-  email           String?
-  address         String?
-  category        String?
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id             String   @id @default(cuid())
+  name           String
+  phone          String?
+  contact_number String?
+  email          String?
+  address        String?
+  category       String?
+  notes          String?
+  created_by     String
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
 
   creator User @relation(fields: [created_by], references: [id])
 
@@ -409,40 +411,40 @@ model Subscription {
 }
 
 model PaymentHistory {
-  id                   String   @id @default(cuid())
+  id                   String    @id @default(cuid())
   user_email           String
   subscription_id      String?
-  amount               Float?   @default(0)
-  currency             String?  @default("USD")
+  amount               Float?    @default(0)
+  currency             String?   @default("USD")
   status               String?
   payment_date         DateTime?
   stripe_payment_id    String?
   payment_method_last4 String?
   error_message        String?
-  created_at           DateTime @default(now())
+  created_at           DateTime  @default(now())
 
   @@index([user_email])
 }
 
 model PaymentLink {
-  id                          String    @id @default(cuid())
-  customer_id                 String
-  customer_name               String?
-  amount                      Float?    @default(0)
-  currency                    String?   @default("USD")
-  description                 String?
-  status                      String    @default("pending")
-  stripe_checkout_session_id  String?
-  stripe_payment_intent_id    String?
-  checkout_url                String?
-  expires_at                  DateTime?
-  paid_at                     DateTime?
-  platform_fee_amount         Float?    @default(0)
-  net_amount                  Float?    @default(0)
-  payment_metadata            Json?
-  created_by                  String
-  created_at                  DateTime  @default(now())
-  updated_at                  DateTime  @updatedAt
+  id                         String    @id @default(cuid())
+  customer_id                String
+  customer_name              String?
+  amount                     Float?    @default(0)
+  currency                   String?   @default("USD")
+  description                String?
+  status                     String    @default("pending")
+  stripe_checkout_session_id String?
+  stripe_payment_intent_id   String?
+  checkout_url               String?
+  expires_at                 DateTime?
+  paid_at                    DateTime?
+  platform_fee_amount        Float?    @default(0)
+  net_amount                 Float?    @default(0)
+  payment_metadata           Json?
+  created_by                 String
+  created_at                 DateTime  @default(now())
+  updated_at                 DateTime  @updatedAt
 
   customer Customer @relation(fields: [customer_id], references: [id])
   creator  User     @relation(fields: [created_by], references: [id])
@@ -467,43 +469,40 @@ model ConsumptionLog {
   @@index([created_by])
 }
 
-
 model Invoice {
-  id              String   @id @default(cuid())
-  invoice_number  String
-  customer_id     String
-  customer_name   String?
-  customer_phone  String?
+  id               String    @id @default(cuid())
+  invoice_number   String
+  customer_id      String
+  customer_name    String?
+  customer_phone   String?
   customer_address String?
-  amount          Float    @default(0)
-  tax_amount      Float?   @default(0)
-  total_amount    Float    @default(0)
-  currency        String?  @default("USD")
-  period_start    DateTime?
-  period_end      DateTime?
-  status          String?  @default("generated")
-  trn_number      String?
-  business_name   String?
+  amount           Float     @default(0)
+  tax_amount       Float?    @default(0)
+  total_amount     Float     @default(0)
+  currency         String?   @default("USD")
+  period_start     DateTime?
+  period_end       DateTime?
+  status           String?   @default("generated")
+  trn_number       String?
+  business_name    String?
   business_address String?
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
+  notes            String?
+  created_by       String
+  created_at       DateTime  @default(now())
 
   @@index([created_by])
   @@index([customer_id])
 }
 
-
-
 model Driver {
-  id              String   @id @default(cuid())
-  name            String
-  phone           String?
-  vehicle_number  String?
-  is_active       Boolean  @default(true)
-  access_code     String?  @unique
-  created_by      String
-  created_at      DateTime @default(now())
+  id             String   @id @default(cuid())
+  name           String
+  phone          String?
+  vehicle_number String?
+  is_active      Boolean  @default(true)
+  access_code    String?  @unique
+  created_by     String
+  created_at     DateTime @default(now())
 
   @@index([created_by])
   @@index([access_code])
@@ -527,93 +526,98 @@ model DeliveryBatch {
 }
 
 model DeliveryItem {
-  id              String   @id @default(cuid())
-  batch_id        String
-  customer_id     String
-  customer_name   String?
-  customer_phone  String?
-  customer_address String?
-  area            String?
-  meal_type       String?
-  roti_quantity   Int?     @default(0)
-  rice_type       String?
-  special_notes   String?
-  status          String?  @default("pending")
-  delivered_at    DateTime?
+  id                 String    @id @default(cuid())
+  batch_id           String
+  customer_id        String
+  customer_name      String?
+  customer_phone     String?
+  customer_address   String?
+  area               String?
+  meal_type          String?
+  roti_quantity      Int?      @default(0)
+  rice_type          String?
+  attribute_values   Json? // snapshot of the customer's values at delivery time
+  special_notes      String?
+  status             String?   @default("pending")
+  delivered_at       DateTime?
   delivery_photo     String?
   delivery_latitude  Float?
   delivery_longitude Float?
   notes              String?
   created_by         String
-  created_at         DateTime @default(now())
+  created_at         DateTime  @default(now())
 
   @@index([batch_id])
   @@index([created_by])
 }
 
-
-
 model Kitchen {
-  id              String   @id @default(cuid())
-  name            String
-  address         String?
-  phone           String?
-  manager_name    String?
-  capacity        Int?     @default(100)
-  areas_served    String?
-  is_active       Boolean  @default(true)
-  created_by      String
-  created_at      DateTime @default(now())
+  id           String   @id @default(cuid())
+  name         String
+  address      String?
+  phone        String?
+  manager_name String?
+  capacity     Int?     @default(100)
+  areas_served String?
+  is_active    Boolean  @default(true)
+  created_by   String
+  created_at   DateTime @default(now())
 
   @@index([created_by])
 }
 
 model PrepItem {
-  id              String   @id @default(cuid())
-  kitchen_id      String?
-  meal_type       String?
-  prep_date       String
-  item_name       String
-  quantity        Int      @default(0)
-  unit            String?
-  category        String?
-  status          String?  @default("pending")
-  prepared_by     String?
-  prepared_at     DateTime?
-  notes           String?
-  created_by      String
-  created_at      DateTime @default(now())
+  id           String    @id @default(cuid())
+  kitchen_id   String?
+  meal_type    String?
+  prep_date    String
+  item_name    String
+  quantity     Int       @default(0)
+  unit         String?
+  category     String?
+  // Stable identity, separate from the printed item_name. Regenerate-dedupe and
+  // any join back to config key on these, so renaming an attribute or a choice
+  // no longer orphans historical prep rows.
+  attribute_id String?
+  choice_id    String?
+  status       String?   @default("pending")
+  prepared_by  String?
+  prepared_at  DateTime?
+  notes        String?
+  created_by   String
+  created_at   DateTime  @default(now())
 
   @@index([created_by])
   @@index([prep_date])
   @@index([kitchen_id])
+  @@index([prep_date, attribute_id])
 }
 
 model ChatMessage {
-  id              String   @id @default(cuid())
-  customer_phone  String
-  direction       String   @default("inbound")
-  message         String
-  intent          String?
-  auto_replied    Boolean  @default(false)
-  reply_message   String?
-  created_by      String
-  created_at      DateTime @default(now())
+  id             String   @id @default(cuid())
+  customer_phone String
+  direction      String   @default("inbound")
+  message        String
+  intent         String?
+  auto_replied   Boolean  @default(false)
+  reply_message  String?
+  created_by     String
+  created_at     DateTime @default(now())
 
   @@index([created_by])
   @@index([customer_phone])
 }
 
 model CustomerOTP {
-  id            String   @id @default(cuid())
-  phone_number  String
-  otp_code      String
-  merchant_id   String
-  customer_id   String?
-  attempts      Int      @default(0)
-  verified      Boolean  @default(false)
-  expires_at    DateTime
-  created_at    DateTime @default(now())
+  id           String   @id @default(cuid())
+  phone_number String
+  otp_code     String
+  merchant_id  String
+  customer_id  String?
+  attempts     Int      @default(0)
+  verified     Boolean  @default(false)
+  expires_at   DateTime
+  created_at   DateTime @default(now())
 
   @@index([phone_number, merchant_id])
 }
@@ -622,7 +626,7 @@ model OneTimeOrder {
   id                String   @id @default(cuid())
   customer_id       String
   customer_name     String?
-  items             Json     // [{menu_item_id, name, quantity, price}]
+  items             Json // [{menu_item_id, name, quantity, price}]
   total_amount      Float
   currency          String   @default("USD")
   delivery_date     String?
@@ -661,17 +665,17 @@ model DeviceToken {
 }
 
 model DriverLocation {
-  id          String   @id @default(cuid())
-  driver_id   String
-  batch_id    String?
-  latitude    Float
-  longitude   Float
-  heading     Float?
-  speed       Float?
-  accuracy    Float?
-  is_active   Boolean  @default(true)
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
+  id         String   @id @default(cuid())
+  driver_id  String
+  batch_id   String?
+  latitude   Float
+  longitude  Float
+  heading    Float?
+  speed      Float?
+  accuracy   Float?
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   @@index([driver_id, is_active])
   @@index([batch_id])
@@ -695,4 +699,46 @@ model SystemLog {
   @@index([severity])
   @@index([resolved])
   @@index([created_at])
+}
+
+model TiffinAttribute {
+  id   String @id @default(cuid())
+  name String // "Roti", "Rice", "Diet", "Curd" — the merchant's own word
+  kind String // 'count' | 'choice' | 'toggle'
+
+  // For kind='choice': [{ id, label, sort_order, is_default, group, diet_match,
+  // aliases, color }]. `group` is how a tier like Premium partitions the kitchen
+  // board without being a magic string; `aliases` is how legacy values such as
+  // 'Veg Only' or 'Yes' resolve without a data migration.
+  choices       Json?
+  default_value Json?
+
+  unit          String? // -> PrepItem.unit,     e.g. "pieces"
+  prep_category String? // -> PrepItem.category,  e.g. "bread"
+  min_value     Int? // count only
+  max_value     Int?
+
+  sort_order Int     @default(0)
+  is_active  Boolean @default(true)
+
+  // At most one attribute per merchant is the axis the kitchen board splits on.
+  is_segment_axis Boolean @default(false)
+
+  show_on_form      Boolean @default(true)
+  show_on_portal    Boolean @default(true)
+  show_on_label     Boolean @default(true)
+  show_on_kitchen   Boolean @default(true)
+  include_in_totals Boolean @default(true)
+
+  // Which hardcoded column this attribute replaces, during the transition.
+  legacy_field String? // 'roti_quantity' | 'rice_type' | 'dietary_preference'
+
+  created_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  creator User @relation(fields: [created_by], references: [id])
+
+  @@unique([created_by, legacy_field])
+  @@index([created_by])
 }

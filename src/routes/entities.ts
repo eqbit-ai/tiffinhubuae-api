@@ -31,7 +31,12 @@ const booleanFields = new Set([
   'carry_forward_applied', 'read', 'is_read', 'email_sent', 'notification_sent',
   'reminder_before_sent', 'reminder_after_sent', 'is_trial', 'trial_converted',
   'is_active', 'deposit_paid', 'discount_applied',
-]);
+  'is_segment_axis',
+  'show_on_form',
+  'show_on_portal',
+  'show_on_label',
+  'show_on_kitchen',
+  'include_in_totals',]);
 
 // Fields that are Float/Int in Prisma — empty strings must become null or 0
 const numericFields = new Set([
@@ -43,7 +48,9 @@ const numericFields = new Set([
   'discount_amount', 'billing_amount', 'capacity', 'given_count', 'returned_count',
   'outstanding', 'deposit_amount', 'count', 'quantity_prepared', 'cost_per_meal',
   'rating', 'total_orders', 'delivered_count', 'fee_percentage',
-]);
+  'sort_order',
+  'min_value',
+  'max_value',]);
 
 // Sanitize empty strings: convert to null for non-string fields
 function sanitizeEmptyStrings(data: any) {
@@ -124,6 +131,10 @@ const entityConfig: Record<string, {
   ingredients: { model: () => prisma.ingredient, ownerField: 'created_by', ownerValue: 'id' },
   recipes: { model: () => prisma.recipe, ownerField: 'created_by', ownerValue: 'id' },
   suppliers: { model: () => prisma.supplier, ownerField: 'created_by', ownerValue: 'id' },
+  // Merchant-defined tiffin attributes. No softDelete flag: deleting an
+  // attribute would strand values on every customer row that referenced it, so
+  // DELETE is rejected outright below and deactivation is is_active: false.
+  tiffin_attributes: { model: () => prisma.tiffinAttribute, ownerField: 'created_by', ownerValue: 'id' },
   purchases: { model: () => prisma.purchase, ownerField: 'created_by', ownerValue: 'id' },
   wastages: { model: () => prisma.wastage, ownerField: 'created_by', ownerValue: 'id' },
   support_tickets: { model: () => prisma.supportTicket, ownerField: 'user_email', ownerValue: 'email' },
@@ -545,6 +556,16 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
 router.delete('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: AuthRequest, res) => {
   const config = entityConfig[req.params.entity as string];
   if (!config) return res.status(404).json({ error: 'Unknown entity' });
+
+  // Customers reference attributes by id in attribute_values. Deleting one
+  // would leave orphaned keys on every customer row that used it — for the
+  // largest merchant that is 446 rows, mid-service, with no way to tell what the
+  // value meant. Deactivating hides it everywhere and keeps the data readable.
+  if (req.params.entity === 'tiffin_attributes') {
+    return res.status(405).json({
+      error: 'Tiffin attributes cannot be deleted. Set is_active to false to retire one — customer records reference it by id.',
+    });
+  }
 
   try {
     const existing = await config.model().findUnique({ where: { id: req.params.id } });
