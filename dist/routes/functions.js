@@ -17,6 +17,7 @@ const pushNotification_1 = require("../services/pushNotification");
 const cloudinary_1 = require("../lib/cloudinary");
 const date_fns_1 = require("date-fns");
 const weekend_1 = require("../lib/weekend");
+const fees_1 = require("../lib/fees");
 const router = (0, express_1.Router)();
 // Prisma validation errors name models, columns and argument types, and the
 // entity router lets a caller steer them via ?sortBy= and the where filter —
@@ -257,27 +258,98 @@ router.post('/cancel-subscription', auth_1.blockIfImpersonating, async (req, res
             cancel_at_period_end: true,
         });
         const accessEndsAt = new Date(subscription.current_period_end * 1000).toISOString();
+        // Cancelling at period end means "stop billing me", not "cut me off now".
+        // This used to write subscription_status: 'cancelled' immediately, which both
+        // access guards read as "blocked" — so a merchant who cancelled on day 2 of a
+        // paid month lost the other 28 days they had already paid for, while the UI
+        // promised "you keep access until <date>". The status stays as Stripe reports
+        // it; customer.subscription.deleted flips it to cancelled when the period
+        // actually ends.
         await prisma_1.prisma.user.update({
             where: { id: user.id },
             data: {
-                subscription_status: 'cancelled',
-                plan_type: 'none',
+                subscription_status: subscription.status,
                 subscription_ends_at: new Date(accessEndsAt),
                 current_period_end: new Date(accessEndsAt),
                 cancel_at_period_end: true,
                 cancellation_reason: reason || 'No reason provided',
                 cancelled_at: new Date(),
-                is_paid: false,
             },
         });
         const subs = await prisma_1.prisma.subscription.findMany({ where: { user_email: user.email } });
         if (subs.length > 0) {
             await prisma_1.prisma.subscription.update({
                 where: { id: subs[0].id },
-                data: { status: 'cancelled', cancelled_at: new Date(), cancel_reason: reason || 'No reason provided' },
+                data: {
+                    status: subscription.status,
+                    cancelled_at: new Date(),
+                    cancel_reason: reason || 'No reason provided',
+                },
             });
         }
-        res.json({ success: true, access_until: accessEndsAt, status: 'cancelled' });
+        res.json({ success: true, access_until: accessEndsAt, status: subscription.status, cancel_at_period_end: true });
+    }
+    catch (error) {
+        res.status(500).json({ error: safeError(error) });
+    }
+});
+// ─── Resume Subscription ─────────────────────────────────────
+/**
+ * Undo a "cancel at period end" while the period is still running. Previously
+ * the Billing page's Reactivate button only said "contact support", so a
+ * merchant who cancelled by mistake had no way back without a human.
+ */
+router.post('/resume-subscription', auth_1.blockIfImpersonating, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user.stripe_subscription_id) {
+            return res.status(400).json({ error: 'No subscription to resume' });
+        }
+        if (!user.cancel_at_period_end) {
+            return res.status(400).json({ error: 'This subscription is not scheduled to cancel' });
+        }
+        const subscription = await stripe_1.stripe.subscriptions.update(user.stripe_subscription_id, {
+            cancel_at_period_end: false,
+        });
+        await prisma_1.prisma.user.update({
+            where: { id: user.id },
+            data: {
+                subscription_status: subscription.status,
+                is_paid: subscription.status === 'active',
+                cancel_at_period_end: false,
+                cancellation_reason: null,
+                cancelled_at: null,
+                ...(subscription.current_period_end && {
+                    current_period_end: new Date(subscription.current_period_end * 1000),
+                    subscription_ends_at: new Date(subscription.current_period_end * 1000),
+                    next_billing_date: new Date(subscription.current_period_end * 1000),
+                }),
+            },
+        });
+        res.json({ success: true, status: subscription.status });
+    }
+    catch (error) {
+        res.status(500).json({ error: safeError(error) });
+    }
+});
+// ─── Stripe Billing Portal ───────────────────────────────────
+/**
+ * The Billing page had an "Open Billing Portal" button that fired a toast and
+ * nothing else (the redirect was commented out), and it was super-admin-only —
+ * so no merchant had any way to update a card or download an invoice.
+ */
+router.post('/billing-portal', auth_1.blockIfImpersonating, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user.stripe_customer_id) {
+            return res.status(400).json({ error: 'No billing account found. This applies to Stripe subscriptions only.' });
+        }
+        const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+        const session = await stripe_1.stripe.billingPortal.sessions.create({
+            customer: user.stripe_customer_id,
+            return_url: `${appUrl}/Billing`,
+        });
+        res.json({ url: session.url });
     }
     catch (error) {
         res.status(500).json({ error: safeError(error) });
@@ -735,21 +807,15 @@ router.post('/check-subscription-status', async (req, res) => {
 // ─── Check Premium Access ─────────────────────────────────────
 router.post('/check-premium-access', async (req, res) => {
     const user = req.user;
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
-    const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
-    const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-    const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-    res.json({ hasPremiumAccess: hasPremium, plan_type: user.plan_type, subscription_status: user.subscription_status });
+    // One plan: access is binary.
+    res.json({ hasPremiumAccess: (0, auth_1.hasProductAccess)(user), plan_type: user.plan_type, subscription_status: user.subscription_status });
 });
 // ─── Check Plan Access ────────────────────────────────────────
 router.post('/check-plan-access', async (req, res) => {
     const user = req.user;
     const { feature } = req.body;
-    const DEFAULT_SUPER_ADMIN = process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me';
-    const isSuperAdmin = user.email === DEFAULT_SUPER_ADMIN || user.is_super_admin;
-    const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-    const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-    res.json({ hasAccess: hasPremium, feature, plan_type: user.plan_type });
+    // Every feature ships in the one plan, so `feature` no longer changes the answer.
+    res.json({ hasAccess: (0, auth_1.hasProductAccess)(user), feature, plan_type: user.plan_type });
 });
 // ─── Check Trial Expiry ──────────────────────────────────────
 router.post('/check-trial-expiry', async (req, res) => {
@@ -798,10 +864,10 @@ router.post('/list-active-plans', async (_req, res) => {
             prices: [
                 {
                     id: stripe_1.STRIPE_PREMIUM_PRICE_ID || 'price_premium',
-                    unit_amount: 1600,
+                    unit_amount: 1000,
                     currency: 'usd',
                     recurring: { interval: 'month' },
-                    product: { name: 'Premium Plan' },
+                    product: { name: 'TiffinHub' },
                 },
             ],
         });
@@ -870,13 +936,12 @@ router.post('/send-customer-email', async (req, res) => {
 // ─── Assign User Plan (Super Admin) ──────────────────────────
 router.post('/assign-user-plan', auth_1.superAdminOnly, async (req, res) => {
     try {
-        const { targetUserEmail, planType, durationMonths } = req.body;
-        if (!targetUserEmail || !planType) {
+        const { targetUserEmail, durationMonths } = req.body;
+        if (!targetUserEmail) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
-        if (!['basic', 'premium'].includes(planType)) {
-            return res.status(400).json({ error: 'Invalid plan type' });
-        }
+        // There is one plan, so an admin grant can only ever mean "give them the plan".
+        const planType = 'premium';
         const targetUser = await prisma_1.prisma.user.findUnique({ where: { email: targetUserEmail } });
         if (!targetUser)
             return res.status(404).json({ error: 'User not found' });
@@ -900,7 +965,7 @@ router.post('/assign-user-plan', auth_1.superAdminOnly, async (req, res) => {
                 last_payment_status: 'admin_assigned',
             },
         });
-        res.json({ success: true, message: `Assigned ${planType} plan to ${targetUserEmail}` });
+        res.json({ success: true, message: `Activated the plan for ${targetUserEmail}` });
     }
     catch (error) {
         res.status(500).json({ error: safeError(error) });
@@ -909,10 +974,11 @@ router.post('/assign-user-plan', auth_1.superAdminOnly, async (req, res) => {
 // ─── Manual Grant Access (Super Admin) ────────────────────────
 router.post('/manual-grant-access', auth_1.superAdminOnly, async (req, res) => {
     try {
-        const { targetUserEmail, planType, months } = req.body;
-        if (!targetUserEmail || !planType) {
+        const { targetUserEmail, months } = req.body;
+        if (!targetUserEmail) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
+        const planType = 'premium';
         const targetUser = await prisma_1.prisma.user.findUnique({ where: { email: targetUserEmail } });
         if (!targetUser)
             return res.status(404).json({ error: 'User not found' });
@@ -1039,9 +1105,10 @@ router.post('/create-customer-payment-checkout', auth_1.blockIfImpersonating, as
         const customer = await prisma_1.prisma.customer.findFirst({ where: { id: customerId, created_by: user.id } });
         if (!customer)
             return res.status(404).json({ error: 'Customer not found' });
-        const feePercentage = user.fee_percentage || 3.5;
-        const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-        const netAmount = amount - platformFeeAmount;
+        const platformFee = (0, fees_1.calculatePlatformFee)(amount, user.fee_percentage);
+        const feePercentage = platformFee.feePercentage;
+        const platformFeeAmount = platformFee.fee;
+        const netAmount = platformFee.net;
         const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
         const appUrl = origin.replace(/\/$/, '');
         const session = await stripe_1.stripe.checkout.sessions.create({
@@ -1056,7 +1123,7 @@ router.post('/create-customer-payment-checkout', auth_1.blockIfImpersonating, as
                     quantity: 1,
                 }],
             payment_intent_data: {
-                application_fee_amount: Math.round(platformFeeAmount * 100),
+                application_fee_amount: platformFee.feeMinor,
                 metadata: { customer_id: customerId, merchant_email: user.email },
             },
             metadata: { customer_id: customerId, customer_owner_email: user.email, amount: amount.toString() },
@@ -1105,9 +1172,10 @@ router.post('/generate-customer-payment-link', auth_1.blockIfImpersonating, asyn
         const amount = reqAmount || customer.payment_amount || 0;
         if (amount <= 0)
             return res.status(400).json({ error: 'Invalid payment amount' });
-        const feePercentage = user.fee_percentage || 3.5;
-        const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-        const netAmount = amount - platformFeeAmount;
+        const platformFee = (0, fees_1.calculatePlatformFee)(amount, user.fee_percentage);
+        const feePercentage = platformFee.feePercentage;
+        const platformFeeAmount = platformFee.fee;
+        const netAmount = platformFee.net;
         const currencyCode = (user.currency || 'usd').toLowerCase();
         const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
         const appUrl = origin.replace(/\/$/, '');
@@ -1123,7 +1191,7 @@ router.post('/generate-customer-payment-link', auth_1.blockIfImpersonating, asyn
                     quantity: 1,
                 }],
             payment_intent_data: {
-                application_fee_amount: Math.round(platformFeeAmount * 100),
+                application_fee_amount: platformFee.feeMinor,
                 metadata: { customer_id: customerId, merchant_email: user.email },
             },
             metadata: {
@@ -1255,7 +1323,7 @@ router.post('/get-stripe-account-status', async (req, res) => {
             accountId: account.id,
             account_id: account.id,
             bankAccountLast4,
-            feePercentage: user.fee_percentage || 3.5,
+            feePercentage: user.fee_percentage ?? fees_1.DEFAULT_FEE_PERCENTAGE,
             feeConsentDate: user.fee_consent_accepted_at,
         });
     }
@@ -1351,8 +1419,9 @@ async function runAutoPaymentReminders() {
             try {
                 const amount = customer.payment_amount;
                 const currency = user.currency || 'usd';
-                const feePercentage = user.fee_percentage || 3.5;
-                const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                const platformFee = (0, fees_1.calculatePlatformFee)(amount, user.fee_percentage);
+                const feePercentage = platformFee.feePercentage;
+                const platformFeeAmount = platformFee.fee;
                 const session = await stripe_1.stripe.checkout.sessions.create({
                     mode: 'payment',
                     payment_method_types: ['card'],
@@ -1365,7 +1434,7 @@ async function runAutoPaymentReminders() {
                             quantity: 1,
                         }],
                     payment_intent_data: {
-                        application_fee_amount: Math.round(platformFeeAmount * 100),
+                        application_fee_amount: platformFee.feeMinor,
                         metadata: { customer_id: customer.id, merchant_email: user.email },
                     },
                     metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
@@ -1438,8 +1507,9 @@ async function runAutoPaymentReminders() {
             try {
                 const amount = customer.payment_amount;
                 const currency = user.currency || 'usd';
-                const feePercentage = user.fee_percentage || 3.5;
-                const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                const platformFee = (0, fees_1.calculatePlatformFee)(amount, user.fee_percentage);
+                const feePercentage = platformFee.feePercentage;
+                const platformFeeAmount = platformFee.fee;
                 const session = await stripe_1.stripe.checkout.sessions.create({
                     mode: 'payment',
                     payment_method_types: ['card'],
@@ -1452,7 +1522,7 @@ async function runAutoPaymentReminders() {
                             quantity: 1,
                         }],
                     payment_intent_data: {
-                        application_fee_amount: Math.round(platformFeeAmount * 100),
+                        application_fee_amount: platformFee.feeMinor,
                         metadata: { customer_id: customer.id, merchant_email: user.email },
                     },
                     metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
@@ -1556,18 +1626,16 @@ async function runTrialExpiryCheck() {
             const user = await prisma_1.prisma.user.findUnique({ where: { id: customer.created_by } });
             if (!user)
                 continue;
-            // Only premium merchants can use SMS features
-            const isSuperAdmin = user.email === (process.env.SUPER_ADMIN_EMAIL || 'support@tiffinhub.me') || user.is_super_admin === true;
-            const hasSpecialAccess = user.special_access_type && user.special_access_type !== 'none';
-            const hasPremium = isSuperAdmin || hasSpecialAccess || user.plan_type === 'premium';
-            if (!hasPremium)
+            // Subscribers only — don't spend SMS credit on lapsed accounts.
+            if (!(0, auth_1.hasProductAccess)(user))
                 continue;
             let paymentLink = '';
             if (user.stripe_connect_account_id && user.payment_account_connected && user.payment_verification_status === 'verified') {
                 const amount = customer.payment_amount || 0;
                 if (amount > 0) {
-                    const feePercentage = user.fee_percentage || 3.5;
-                    const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                    const platformFee = (0, fees_1.calculatePlatformFee)(amount, user.fee_percentage);
+                    const feePercentage = platformFee.feePercentage;
+                    const platformFeeAmount = platformFee.fee;
                     const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
                     const session = await stripe_1.stripe.checkout.sessions.create({
                         mode: 'payment',
@@ -1581,7 +1649,7 @@ async function runTrialExpiryCheck() {
                                 quantity: 1,
                             }],
                         payment_intent_data: {
-                            application_fee_amount: Math.round(platformFeeAmount * 100),
+                            application_fee_amount: platformFee.feeMinor,
                             metadata: { customer_id: customer.id, merchant_email: user.email },
                         },
                         metadata: { customer_id: customer.id, customer_owner_email: user.email, amount: amount.toString() },
@@ -1807,9 +1875,10 @@ router.post('/approve-customer', async (req, res) => {
             const amount = customer.payment_amount || 0;
             if (amount > 0) {
                 try {
-                    const feePercentage = user.fee_percentage || 3.5;
-                    const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-                    const netAmount = amount - platformFeeAmount;
+                    const platformFee = (0, fees_1.calculatePlatformFee)(amount, user.fee_percentage);
+                    const feePercentage = platformFee.feePercentage;
+                    const platformFeeAmount = platformFee.fee;
+                    const netAmount = platformFee.net;
                     const unitAmount = Math.round(amount * 100); // in fils/cents
                     const currencyCode = (user.currency || 'usd').toLowerCase();
                     const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -1826,7 +1895,7 @@ router.post('/approve-customer', async (req, res) => {
                                 quantity: 1,
                             }],
                         payment_intent_data: {
-                            application_fee_amount: Math.round(platformFeeAmount * 100),
+                            application_fee_amount: platformFee.feeMinor,
                             metadata: { customer_id: customerId, merchant_email: user.email },
                         },
                         metadata: {

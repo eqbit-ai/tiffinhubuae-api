@@ -10,5 +10,8 @@ exports.stripe = new stripe_1.default(stripeKey, {
     apiVersion: '2024-12-18.acacia',
 });
 exports.STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
-exports.STRIPE_PREMIUM_PRICE_ID = process.env.STRIPE_PREMIUM_PRICE_ID || '';
+// The product has one plan, so there is one price. STRIPE_PRICE_ID is the name
+// going forward; STRIPE_PREMIUM_PRICE_ID is still read so the deployed env keeps
+// working without a coordinated restart.
+exports.STRIPE_PREMIUM_PRICE_ID = process.env.STRIPE_PRICE_ID || process.env.STRIPE_PREMIUM_PRICE_ID || '';
 //# sourceMappingURL=stripe.js.map

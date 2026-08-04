@@ -12,6 +12,7 @@ const whatsapp_1 = require("../services/whatsapp");
 const auth_1 = require("../middleware/auth");
 const pushNotification_1 = require("../services/pushNotification");
 const crypto_1 = __importDefault(require("crypto"));
+const fees_1 = require("../lib/fees");
 const router = (0, express_1.Router)();
 // Prisma validation errors name models, columns and argument types, and the
 // entity router lets a caller steer them via ?sortBy= and the where filter —
@@ -402,9 +403,10 @@ router.post('/renew', auth_1.customerAuthMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Invalid payment amount' });
         }
         const currency = (merchant.currency || 'usd').toLowerCase();
-        const feePercentage = merchant.fee_percentage || 3.5;
-        const platformFeeAmount = Math.round((amount * feePercentage) / 100);
-        const netAmount = amount - platformFeeAmount;
+        const platformFee = (0, fees_1.calculatePlatformFee)(amount, merchant.fee_percentage);
+        const feePercentage = platformFee.feePercentage;
+        const platformFeeAmount = platformFee.fee;
+        const netAmount = platformFee.net;
         const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
         const session = await stripe_1.stripe.checkout.sessions.create({
             mode: 'payment',
@@ -420,7 +422,7 @@ router.post('/renew', auth_1.customerAuthMiddleware, async (req, res) => {
                 },
             ],
             payment_intent_data: {
-                application_fee_amount: Math.round(platformFeeAmount * 100),
+                application_fee_amount: platformFee.feeMinor,
                 metadata: { customer_id: customer.id, merchant_email: merchant.email, payment_type: 'renewal' },
             },
             metadata: {
@@ -759,9 +761,10 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
             });
         }
         // Card payment — Stripe checkout
-        const feePercentage = merchant.fee_percentage || 3.5;
-        const platformFeeAmount = Math.round((totalAmount * feePercentage) / 100);
-        const netAmount = totalAmount - platformFeeAmount;
+        const platformFee = (0, fees_1.calculatePlatformFee)(totalAmount, merchant.fee_percentage);
+        const feePercentage = platformFee.feePercentage;
+        const platformFeeAmount = platformFee.fee;
+        const netAmount = platformFee.net;
         const order = await prisma_1.prisma.oneTimeOrder.create({
             data: {
                 customer_id: customer.id,
@@ -792,7 +795,7 @@ router.post('/orders', auth_1.customerAuthMiddleware, async (req, res) => {
                 quantity: item.quantity,
             })),
             payment_intent_data: {
-                application_fee_amount: Math.round(platformFeeAmount * 100),
+                application_fee_amount: platformFee.feeMinor,
                 metadata: {
                     customer_id: customer.id,
                     merchant_email: merchant.email,
@@ -1020,8 +1023,9 @@ router.post('/join/:merchantId', async (req, res) => {
             const amount = req.body.payment_amount || 0;
             if (amount > 0) {
                 const currency = (merchant.currency || 'usd').toLowerCase();
-                const feePercentage = merchant.fee_percentage || 3.5;
-                const platformFeeAmount = Math.round((amount * feePercentage) / 100);
+                const platformFee = (0, fees_1.calculatePlatformFee)(amount, merchant.fee_percentage);
+                const feePercentage = platformFee.feePercentage;
+                const platformFeeAmount = platformFee.fee;
                 const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
                 const session = await stripe_1.stripe.checkout.sessions.create({
                     mode: 'payment',
@@ -1035,7 +1039,7 @@ router.post('/join/:merchantId', async (req, res) => {
                             quantity: 1,
                         }],
                     payment_intent_data: {
-                        application_fee_amount: Math.round(platformFeeAmount * 100),
+                        application_fee_amount: platformFee.feeMinor,
                         metadata: { customer_id: customer.id, merchant_email: merchant.email },
                     },
                     metadata: {

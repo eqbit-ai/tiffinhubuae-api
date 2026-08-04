@@ -19,6 +19,31 @@ export declare function runCustomerDaysMaintenance(): Promise<{
     deactivated: number;
     remindersFlagged: number;
 }>;
+/**
+ * Expire subscriptions whose paid-for period has actually ended.
+ *
+ * Nothing enforced this. runMerchantTrialExpiry only ever looked at
+ * subscription_status='trial' against trial_ends_at, so an admin grant with a
+ * duration never ended — one merchant sat at 'active' five months past their
+ * subscription_ends_at, using the product for free.
+ *
+ * The rule is keyed on whether there is a Stripe subscription to ask about, NOT
+ * on subscription_source. One live merchant is source='admin' but carries a real
+ * stripe_subscription_id, and trusting the source label there would have cut off
+ * someone who is still paying. So:
+ *  - any user with a stripe_subscription_id is checked against Stripe, and only
+ *    Stripe's own answer expires them. A local date can be stale (a missed
+ *    invoice.paid webhook); Stripe cannot.
+ *  - everyone else is a manual grant, where the local end date is authoritative.
+ *
+ * A one-day grace period absorbs clock skew and webhook lag either way.
+ */
+export declare function runSubscriptionExpiry(): Promise<{
+    scanned: number;
+    expired: number;
+    keptStripeActive: number;
+    skippedSpecialAccess: number;
+}>;
 export declare function runMerchantTrialExpiry(): Promise<{
     expired: number;
 }>;
