@@ -201,7 +201,7 @@ router.put('/me', authMiddleware, async (req: AuthRequest, res) => {
     const allowedFields = [
       'full_name', 'phone', 'business_name', 'logo_url',
       'whatsapp_notifications_enabled', 'whatsapp_number',
-      'currency', 'language', 'timezone', 'country',
+      'currency', 'timezone', 'country',
       'brand_primary_color', 'brand_accent_color', 'custom_domain',
     ];
     const data: any = {};
