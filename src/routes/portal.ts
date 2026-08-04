@@ -332,12 +332,34 @@ router.put('/me', customerAuthMiddleware, async (req: CustomerAuthRequest, res: 
     const allowedFields = ['address', 'breakfast_address', 'lunch_address', 'dinner_address', 'area', 'roti_quantity', 'rice_type', 'dietary_preference', 'special_notes', 'skip_weekends'];
     const updateData: any = {};
 
+    // The portal has historically written values the rest of the app cannot read.
+    // Normalising on the way in means bad rows heal the next time a customer
+    // saves, without a migration.
+    const DIET_ALIASES: Record<string, string> = {
+      'veg only': 'Veg',
+      'vegetarian': 'Veg',
+      'non-veg only': 'Non-Veg',
+      'non vegetarian': 'Non-Veg',
+      'non-vegetarian': 'Non-Veg',
+    };
+
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         if (field === 'roti_quantity') {
-          updateData[field] = parseInt(req.body[field]) || 2;
+          // `parseInt(x) || 2` turned a deliberate 0 into 2, because 0 is falsy —
+          // so a customer who wanted no roti got two, every time they saved.
+          const parsed = parseInt(req.body[field], 10);
+          updateData[field] = Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
         } else if (field === 'skip_weekends') {
           updateData[field] = Boolean(req.body[field]);
+        } else if (field === 'dietary_preference') {
+          const raw = String(req.body[field] ?? '').trim();
+          updateData[field] = DIET_ALIASES[raw.toLowerCase()] ?? raw;
+        } else if (field === 'rice_type') {
+          // 'Yes'/'No' came from the portal's boolean toggle and mean nothing to
+          // the kitchen, which counts by rice type.
+          const raw = String(req.body[field] ?? '').trim();
+          updateData[field] = raw.toLowerCase() === 'no' ? 'None' : raw;
         } else {
           updateData[field] = req.body[field];
         }
@@ -1121,8 +1143,12 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
         address: address || null,
         area: area || null,
         meal_type: meal_type || 'Lunch',
-        roti_quantity: roti_quantity ? parseInt(roti_quantity) : 2,
-        rice_type: rice_type || 'None',
+        roti_quantity: (() => {
+          const parsed = parseInt(roti_quantity, 10);
+          return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2;
+        })(),
+        // The public form sends 'Yes'/'No' for rice; the kitchen counts by type.
+        rice_type: (!rice_type || String(rice_type).toLowerCase() === 'no') ? 'None' : rice_type,
         dietary_preference: dietary_preference || 'Both',
         special_notes: special_notes || null,
         status: 'pending_verification',
