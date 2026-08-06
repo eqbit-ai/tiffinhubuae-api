@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, checkActiveSubscription, AuthRequest } from '../middleware/auth';
 import { isWeekendDate, todayInTimezone } from '../lib/weekend';
+import { validateAttributeValues } from '../lib/tiffinAttributes';
 
 const router = Router();
 
@@ -386,6 +387,12 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
       data.name = data.item_name;
     }
 
+    if (req.params.entity === 'customers' && data.attribute_values !== undefined) {
+      const checked = await validateAttributeValues(data.attribute_values, req.user!.id);
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      data.attribute_values = checked.values;
+    }
+
     // DeliveryItem: always snapshot the LIVE customer record so labels reflect the
     // latest saved address. The frontend may send a stale snapshot (e.g. an address
     // edited after the customer list was loaded); the Customer row is the source of truth.
@@ -522,6 +529,17 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
     sanitizeEmptyStrings(updateData);
     coerceBooleans(updateData);
     coerceDates(updateData);
+
+    // Validated against the *record owner*, not the caller: a super admin acting
+    // on a merchant's customer must still be held to that merchant's attributes.
+    if (entity === 'customers' && updateData.attribute_values !== undefined) {
+      const checked = await validateAttributeValues(
+        updateData.attribute_values,
+        (existing as any).created_by
+      );
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      updateData.attribute_values = checked.values;
+    }
 
     console.log('[PUT] updateData keys:', Object.keys(updateData));
     let record;

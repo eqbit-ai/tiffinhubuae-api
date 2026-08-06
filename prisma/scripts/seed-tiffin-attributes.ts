@@ -25,6 +25,12 @@ type Choice = {
   diet_match: 'veg' | 'non_veg' | 'either' | null;
   aliases: string[];
   color?: string;
+  /**
+   * "None" / "No rice" — a recorded choice *not* to have the component. It still
+   * counts in the breakdown so the buckets stay exhaustive, but the kitchen board
+   * and the prep list leave it out: nobody cooks 89 portions of no rice.
+   */
+  is_absence?: boolean;
 };
 
 const args = process.argv.slice(2);
@@ -45,6 +51,9 @@ function dietMatchFor(label: string): Choice['diet_match'] {
   if (l.includes('non-veg') || l.includes('non veg')) return 'non_veg';
   if (l === 'both') return 'either';
   if (l.includes('veg')) return 'veg';
+  // Named diets that are vegetarian without the word in them. A merchant adding
+  // their own gets to set this on the option itself; these are only the starters.
+  if (['jain', 'satvik', 'sattvic', 'swaminarayan', 'vegan'].includes(l)) return 'veg';
   return null;
 }
 
@@ -89,7 +98,7 @@ async function seedMerchant(user: { id: string; email: string }) {
   const riceChoices: Choice[] = [
     {
       id: choiceId('rice', 'none'), label: 'No rice', sort_order: 0, is_default: !commonest && !hasBareYes,
-      group: 'standard', diet_match: null, aliases: ['None', 'No', ''],
+      group: 'standard', diet_match: null, aliases: ['None', 'No', ''], is_absence: true,
     },
     // Some merchants only ever had the portal's boolean toggle, so 'Yes' is all
     // they have and there is no real type to fold it into. It becomes a choice
@@ -113,7 +122,11 @@ async function seedMerchant(user: { id: string; email: string }) {
 
   // ---- Diet: a choice, and the axis the kitchen board splits on ----------
   const dietRaw = [...new Set(customers.map((c) => c.dietary_preference).filter(Boolean) as string[])];
-  const dietLabels = dietRaw.length ? dietRaw : ['Veg', 'Non-Veg', 'Both'];
+  // A merchant with no customers yet is a *new* merchant, so they get the
+  // starting set rather than nothing. Jain is in it because it is the diet
+  // merchants ask for first and the one they cannot express any other way.
+  // A merchant with existing customers keeps exactly their own vocabulary.
+  const dietLabels = dietRaw.length ? dietRaw : ['Veg', 'Non-Veg', 'Both', 'Jain', 'Premium'];
   const dietChoices: Choice[] = dietLabels.map((label, i) => ({
     id: choiceId('diet', label),
     label,
