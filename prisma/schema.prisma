@@ -51,6 +51,18 @@ model User {
   reset_token_expires            DateTime?
   is_super_admin                 Boolean   @default(false)
   special_access_type            String?
+
+  // Onboarding. Held on the user rather than in the browser: a merchant who
+  // signs up on their phone and opens the laptop must not start again.
+  // `onboarding_completed_at` is the only gate — null means show onboarding.
+  // Existing merchants are backfilled with their created_at so they never see
+  // it (prisma/scripts/backfill-onboarding.ts).
+  onboarding_completed_at        DateTime?
+  // { step, business, meals, skipped[] } — enough to resume mid-flow. The
+  // dashboard checklist is NOT stored here: "has a customer" is derived by
+  // counting customers, because a stored flag drifts from reality and a derived
+  // one cannot lie.
+  onboarding_state               Json?
   created_at                     DateTime  @default(now())
   updated_at                     DateTime  @updatedAt
 
