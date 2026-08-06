@@ -203,10 +203,20 @@ router.put('/me', authMiddleware, async (req: AuthRequest, res) => {
       'whatsapp_notifications_enabled', 'whatsapp_number',
       'currency', 'timezone', 'country',
       'brand_primary_color', 'brand_accent_color', 'custom_domain',
+      // Onboarding progress, so a half-finished setup survives closing the tab.
+      'onboarding_state',
     ];
     const data: any = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) data[field] = req.body[field];
+    }
+
+    // Completion is a server-side timestamp rather than a client-supplied one:
+    // the client says "I am done", the server decides when that was. Skipping
+    // counts as done — a merchant who skips has made a choice, and asking again
+    // every login is how a helpful prompt becomes a nuisance.
+    if (req.body.onboarding_complete === true) {
+      data.onboarding_completed_at = new Date();
     }
 
     const updated = await prisma.user.update({ where: { id: userId }, data });
