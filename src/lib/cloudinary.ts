@@ -6,17 +6,27 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+/** True when Cloudinary has real credentials, so callers can fail with a clear
+ *  message instead of a generic 500 from the SDK. */
+export function isCloudinaryConfigured(): boolean {
+  const { CLOUDINARY_CLOUD_NAME: name, CLOUDINARY_API_KEY: key, CLOUDINARY_API_SECRET: secret } = process.env;
+  return !!(name && key && secret && !name.includes('fake') && !key.includes('fake'));
+}
+
 export async function uploadToCloudinary(
   buffer: Buffer,
   folder: string,
-  filename?: string
+  filename?: string,
+  // 'raw' for anything that is not an image — a PDF put through the image
+  // pipeline below comes back mangled or not at all.
+  resourceType: 'image' | 'raw' = 'image'
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const options: any = {
-      folder,
-      quality: 'auto:good',
-      transformation: [{ width: 1200, crop: 'limit' }],
-    };
+    const options: any = { folder, resource_type: resourceType };
+    if (resourceType === 'image') {
+      options.quality = 'auto:good';
+      options.transformation = [{ width: 1200, crop: 'limit' }];
+    }
     if (filename) {
       options.public_id = filename;
     }

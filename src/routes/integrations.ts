@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { sendEmail } from '../services/email';
+import { uploadToCloudinary, isCloudinaryConfigured } from '../lib/cloudinary';
 
 const router = Router();
 
@@ -18,10 +18,17 @@ function safeError(error: any): string {
 }
 router.use(authMiddleware);
 
-// File upload config
-const uploadsDir = path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
+// File upload config.
+//
+// This wrote to a local directory and handed back a URL on this host. Railway
+// and Render both run containers with ephemeral filesystems, so every redeploy
+// deleted the lot: all four merchant logos in production return 404 today, and
+// the database still holds the dead URLs. It also pointed image URLs at the API
+// host, which is the same host Jio cannot reach — so those logos were invisible
+// in India regardless.
+//
+// Cloudinary was configured on the service the whole time and used correctly by
+// the driver photo and menu image routes. This one route was the exception.
 const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
   'application/pdf',
@@ -38,14 +45,13 @@ const fileFilter: multer.Options['fileFilter'] = (_req, file, cb) => {
   }
 };
 
-const storage = multer.diskStorage({
-  destination: uploadsDir,
-  filename: (_req, file, cb) => {
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
-  },
+// Memory, not disk — the buffer goes straight to Cloudinary. Same pattern the
+// driver photo route already uses.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter,
 });
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 }, fileFilter });
 
 // POST /api/integrations/send-email
 //
@@ -88,8 +94,25 @@ router.post('/upload', upload.single('file'), async (req: AuthRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-    res.json({ file_url: fileUrl, filename: req.file.filename });
+    // Say so plainly rather than letting the SDK throw. Local development runs
+    // deliberately fake credentials, and a merchant should not be told
+    // "something went wrong" when the answer is that uploads are not set up.
+    if (!isCloudinaryConfigured()) {
+      return res.status(503).json({ error: 'File uploads are not configured on this environment.' });
+    }
+
+    const isPdf = req.file.mimetype === 'application/pdf';
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const publicId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+
+    const fileUrl = await uploadToCloudinary(
+      req.file.buffer,
+      'tiffinhub/uploads',
+      publicId,
+      isPdf ? 'raw' : 'image'
+    );
+
+    res.json({ file_url: fileUrl, filename: `${publicId}${ext}` });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
   }
