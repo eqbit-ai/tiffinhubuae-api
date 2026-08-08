@@ -3,16 +3,24 @@ import { prisma } from './lib/prisma';
 import { runAutoPaymentReminders, runTrialExpiryCheck, runAutoResumePausedCustomers } from './routes/functions';
 import { deleteFromCloudinary, extractPublicId } from './lib/cloudinary';
 import { stripe } from './services/stripe';
+import { FEATURES } from './lib/features';
+import { sendEmail } from './services/email';
 
 export function startCronJobs() {
   // Run daily at 5 AM UTC - payment reminders & trial expiry
   cron.schedule('0 5 * * *', async () => {
-    console.log('[Cron] Running automatic payment reminders...');
-    try {
-      const result = await runAutoPaymentReminders();
-      console.log('[Cron] Payment reminders complete:', result);
-    } catch (error) {
-      console.error('[Cron] Payment reminders failed:', error);
+    // Automatic payment reminders are off. The function is untouched and still
+    // exported — restoring it is flipping AUTO_PAYMENTS back to true. It never
+    // sent anything in production anyway: it only looks at merchants with a
+    // *verified* Stripe Connect account, and none exist.
+    if (FEATURES.AUTO_PAYMENTS) {
+      console.log('[Cron] Running automatic payment reminders...');
+      try {
+        const result = await runAutoPaymentReminders();
+        console.log('[Cron] Payment reminders complete:', result);
+      } catch (error) {
+        console.error('[Cron] Payment reminders failed:', error);
+      }
     }
 
     console.log('[Cron] Running trial expiry check...');
@@ -137,12 +145,21 @@ export async function runCustomerDaysMaintenance() {
 
   // Notification is keyed by the merchant's email, while Customer.created_by
   // holds their user id — resolve once rather than per customer.
-  const merchants = await prisma.user.findMany({ select: { id: true, email: true } });
+  const merchants = await prisma.user.findMany({
+    select: { id: true, email: true, currency: true, business_name: true },
+  });
   const emailByUserId = new Map(merchants.map((m) => [m.id, m.email]));
+  const merchantById = new Map(merchants.map((m) => [m.id, m]));
 
   let daysUpdated = 0;
   let deactivated = 0;
   let remindersFlagged = 0;
+
+  // Collected through the loop and sent once per merchant afterwards. A merchant
+  // who onboarded a batch of customers together has them all expire together, so
+  // one email listing five names beats five emails — and it is one send against
+  // the provider's daily limit rather than five.
+  const digests = new Map<string, { notificationIds: string[]; rows: typeof customers }>();
 
   for (const customer of customers) {
     if (!customer.end_date) continue;
@@ -168,7 +185,7 @@ export async function runCustomerDaysMaintenance() {
     const merchantEmail = emailByUserId.get(customer.created_by);
     if (daysRemaining === 3 && !customer.notification_sent && merchantEmail) {
       try {
-        await prisma.notification.create({
+        const notification = await prisma.notification.create({
           data: {
             user_email: merchantEmail,
             title: 'Payment Reminder',
@@ -183,6 +200,15 @@ export async function runCustomerDaysMaintenance() {
             email_sent: false,
           },
         });
+        // email_sent starts false and is flipped only once the send succeeds, so
+        // the column means what it says. Nothing used to flip it: the row was
+        // created and no email was ever sent, which is why Settings promised an
+        // alert that never arrived.
+        const digest = digests.get(customer.created_by) || { notificationIds: [], rows: [] };
+        digest.notificationIds.push(notification.id);
+        digest.rows.push(customer);
+        digests.set(customer.created_by, digest);
+
         data.notification_sent = true;
         remindersFlagged++;
       } catch (err) {
@@ -195,7 +221,75 @@ export async function runCustomerDaysMaintenance() {
     }
   }
 
-  return { scanned: customers.length, daysUpdated, deactivated, remindersFlagged };
+  let emailsSent = 0;
+  let emailsFailed = 0;
+
+  for (const [merchantId, digest] of digests) {
+    const merchant = merchantById.get(merchantId);
+    if (!merchant?.email) continue;
+
+    const currency = (merchant.currency || 'USD').toUpperCase();
+    const rows = digest.rows
+      .map((c) => {
+        const amount = c.payment_amount ? `${currency} ${c.payment_amount}` : '—';
+        const phone = c.phone_number || '—';
+        return `<tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;">${escapeHtml(c.full_name)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;">${escapeHtml(phone)}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;">${escapeHtml(amount)}</td>
+        </tr>`;
+      })
+      .join('');
+
+    const count = digest.rows.length;
+    const subject =
+      count === 1
+        ? `${digest.rows[0].full_name}'s subscription ends in 3 days`
+        : `${count} subscriptions end in 3 days`;
+
+    const body = `
+      <div style="font-family:system-ui,-apple-system,sans-serif;color:#0F172A;max-width:520px;">
+        <p>Hello${merchant.business_name ? ' ' + escapeHtml(merchant.business_name) : ''},</p>
+        <p>${count === 1 ? 'This customer has' : 'These customers have'} three days left before their subscription ends.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0;">
+          <tr style="text-align:left;color:#64748B;font-size:12px;text-transform:uppercase;">
+            <th style="padding:8px 12px;">Customer</th>
+            <th style="padding:8px 12px;">Phone</th>
+            <th style="padding:8px 12px;text-align:right;">Due</th>
+          </tr>
+          ${rows}
+        </table>
+        <p style="color:#64748B;font-size:13px;">You are getting this because TiffinHub tracks your customers' end dates. It is a heads-up for you — nothing has been sent to the ${count === 1 ? 'customer' : 'customers'}.</p>
+      </div>
+    `;
+
+    const result = await sendEmail({ to: merchant.email, subject, body });
+
+    if (result.success) {
+      await prisma.notification.updateMany({
+        where: { id: { in: digest.notificationIds } },
+        data: { email_sent: true },
+      });
+      emailsSent++;
+    } else {
+      // Left at email_sent: false deliberately. The in-app notification still
+      // stands, and the column now records honestly that no email went out.
+      console.error(`[Maintenance] Digest email failed for ${merchant.email}: ${result.reason}`);
+      emailsFailed++;
+    }
+  }
+
+  return { scanned: customers.length, daysUpdated, deactivated, remindersFlagged, emailsSent, emailsFailed };
+}
+
+/** Customer names and business names go into an HTML email; escape them. */
+function escapeHtml(value: string) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
