@@ -10,7 +10,13 @@ datasource db {
 model User {
   id                             String    @id @default(cuid())
   email                          String    @unique
-  password_hash                  String
+  // Nullable since Google Sign-In: an account created through Google has no
+  // password at all. /login rejects a null hash with a message pointing at
+  // Google rather than "invalid credentials", which would be a lie.
+  password_hash                  String?
+  // Google's stable subject id. Matched on before email so that changing the
+  // email on a Google account does not orphan the login.
+  google_id                      String?   @unique
   full_name                      String?
   role                           String    @default("user")
   phone                          String?

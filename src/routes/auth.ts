@@ -155,6 +155,13 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    // An account created through Google has no password. Saying "invalid
+    // credentials" would send someone to the reset-password flow, which cannot
+    // help them — tell them which door to use instead.
+    if (!user.password_hash) {
+      return res.status(401).json({ error: 'This account uses Google Sign-In. Use the "Continue with Google" button.' });
+    }
+
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Invalid credentials' });

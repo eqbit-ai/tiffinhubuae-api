@@ -931,11 +931,22 @@ router.post('/list-active-plans', async (_req: AuthRequest, res) => {
     // Try fetching real prices from Stripe
     if (STRIPE_PREMIUM_PRICE_ID && process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('placeholder')) {
       try {
-        const prices = await stripe.prices.list({ active: true, limit: 10, expand: ['data.product'] });
-        const filtered = STRIPE_PREMIUM_PRICE_ID
-          ? prices.data.filter(p => p.id === STRIPE_PREMIUM_PRICE_ID)
-          : prices.data;
-        return res.json({ prices: filtered });
+        // Fetch the configured price directly rather than listing and filtering:
+        // limit:10 meant a price outside the first page would never be found, and
+        // the paywall rendered "No active plans found" for a plan that exists.
+        if (STRIPE_PREMIUM_PRICE_ID) {
+          const price = await stripe.prices.retrieve(STRIPE_PREMIUM_PRICE_ID, { expand: ['product'] });
+          if (price && price.active) {
+            return res.json({ prices: [price] });
+          }
+          console.log(`[list-active-plans] ${STRIPE_PREMIUM_PRICE_ID} is missing or inactive — using fallback`);
+        } else {
+          const prices = await stripe.prices.list({ active: true, limit: 100, expand: ['data.product'] });
+          if (prices.data.length) return res.json({ prices: prices.data });
+        }
+        // Deliberately falls through to the hardcoded plan below. Returning an
+        // empty array here is what made a misconfigured price id look like
+        // "there are no plans" instead of a configuration problem.
       } catch (e: any) {
         console.log('[list-active-plans] Stripe fetch failed:', e.message);
       }
