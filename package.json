@@ -5,11 +5,13 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc",
-    "start": "prisma db push --accept-data-loss && node dist/index.js",
+    "start": "prisma db push && node dist/index.js",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "db:verify": "prisma migrate diff --from-url \"$DATABASE_URL\" --to-schema-datamodel prisma/schema.prisma --exit-code",
+    "db:push:destructive": "echo 'Applies schema changes that DROP data. Read prisma/SCHEMA.md first.' && prisma db push --accept-data-loss"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
