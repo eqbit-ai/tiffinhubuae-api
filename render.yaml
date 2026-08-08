@@ -1,0 +1,140 @@
+# Render blueprint for the TiffinHub API.
+#
+# Render reads this when you create a Blueprint from the repo, so the service is
+# defined here rather than clicked together in a dashboard nobody can diff.
+#
+# Why this exists at all: Railway runs two always-on services for a workload that
+# is an 18 MB database and a few hundred requests a day. Render's free web
+# service is the replacement, with Postgres on Neon — Render's own free Postgres
+# is deleted after 30 days, which is why the database does not live here.
+#
+# Read before deploying:
+#   prisma/SCHEMA.md — the migrations folder cannot rebuild this database, so a
+#   new environment must come from a pg_dump of production, never from migrations.
+
+services:
+  - type: web
+    name: tiffinhub-api
+    runtime: node
+    plan: free
+    # Closest free region to a UAE and India customer base.
+    region: singapore
+    branch: main
+
+    buildCommand: npm ci && npx prisma generate && npm run build
+
+    # Deliberately identical to railway.toml, so moving host does not quietly
+    # change how the schema is applied. `migrate deploy` is effectively a no-op
+    # against a database restored from a dump (every migration is already
+    # recorded); `npm start` then runs `prisma db push` — without
+    # --accept-data-loss, so a destructive schema change fails the boot instead
+    # of silently dropping a production column.
+    startCommand: npx prisma migrate deploy && npm start
+
+    # Render pings this to decide the service is up. It is unauthenticated and
+    # reports liveness only — the detailed metrics endpoint sits behind auth.
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: NODE_VERSION
+        value: "20"          # matches nixpacks.toml on Railway
+      - key: NODE_ENV
+        value: production
+
+      # The free plan sleeps after 15 minutes idle, and a sleeping process runs
+      # no timers, so node-cron cannot be trusted here. GitHub Actions calls
+      # /api/cron/:schedule instead — see .github/workflows/scheduled-jobs.yml.
+      # Never set this to anything but false on a host that sleeps, and never
+      # leave the workflow enabled against a host where it is true: both running
+      # means every job fires twice.
+      - key: INTERNAL_CRON
+        value: "false"
+
+      # Everything below is a secret or environment-specific. sync: false means
+      # Render prompts for the value and stores it there — nothing sensitive is
+      # committed to this file.
+      - key: DATABASE_URL
+        sync: false          # Neon. Pooled endpoint needs
+                             # ?sslmode=require&pgbouncer=true&connection_limit=1
+      - key: JWT_SECRET
+        sync: false          # boot fails if missing or left at the default
+      - key: FRONTEND_URL
+        sync: false          # https://tiffinhub.me — used for CORS and links
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: MOBILE_APP_ORIGINS
+        sync: false
+
+      # Guards POST /api/cron/:schedule. Unset means the endpoint refuses every
+      # call with 503 — it fails closed. Must match the GitHub Actions secret.
+      - key: CRON_SECRET
+        sync: false
+
+      # Stripe. STRIPE_PRICE_ID is the single pointer to the live plan; the app
+      # reads the price from Stripe rather than hardcoding it.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false          # regenerate: the endpoint URL changes with the host
+      - key: STRIPE_PRICE_ID
+        sync: false
+      # STRIPE_PREMIUM_PRICE_ID is deliberately absent. services/stripe.ts reads
+      # STRIPE_PRICE_ID first and falls back to the old name only so Railway kept
+      # working without a coordinated restart. A fresh host should carry one name
+      # for one plan, not both.
+
+      # Email
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+
+      # Cloudinary — logo and delivery-photo uploads
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+
+      # Twilio. Outbound WhatsApp is off behind FEATURES.WHATSAPP_NOTIFICATIONS,
+      # so these are only needed if that flag is ever turned back on. Carry them
+      # across anyway rather than discovering they are missing later.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      - key: TWILIO_SMS_FROM
+        sync: false
+      - key: TWILIO_TPL_OTP
+        sync: false
+      - key: TWILIO_TPL_NEW_ORDER_MERCHANT
+        sync: false
+      - key: TWILIO_TPL_ORDER_CONFIRMED
+        sync: false
+      - key: TWILIO_TPL_PAYMENT_RECEIVED
+        sync: false
+      - key: TWILIO_TPL_PAYMENT_REMINDER
+        sync: false
+      - key: TWILIO_TPL_PAYMENT_REMINDER_LINK
+        sync: false
+      - key: TWILIO_TPL_PAYMENT_OVERDUE
+        sync: false
+      - key: TWILIO_TPL_PORTAL_LINK
+        sync: false
+      - key: TWILIO_TPL_REGISTRATION
+        sync: false
+      - key: TWILIO_TPL_SERVICE_ENDED
+        sync: false
+      - key: TWILIO_TPL_FEEDBACK
+        sync: false
