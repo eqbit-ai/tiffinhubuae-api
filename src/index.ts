@@ -12,6 +12,7 @@ import portalRoutes from './routes/portal';
 import driverRoutes from './routes/driver';
 import notificationRoutes from './routes/notifications';
 import { startCronJobs } from './cron';
+import cronRoutes from './routes/cron';
 import { prisma } from './lib/prisma';
 import { authMiddleware } from './middleware/auth';
 
@@ -150,6 +151,9 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/portal', portalRoutes);
 app.use('/api/driver', driverRoutes);
 app.use('/api/notifications', notificationRoutes);
+// Mounted before the /api wildcard, and outside the authenticated routes: this
+// is triggered by GitHub Actions, not a user. Its guard is CRON_SECRET.
+app.use('/api/cron', cronRoutes);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entityRoutes);
 

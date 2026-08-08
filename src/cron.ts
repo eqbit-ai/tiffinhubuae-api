@@ -6,84 +6,112 @@ import { stripe } from './services/stripe';
 import { FEATURES } from './lib/features';
 import { sendEmail } from './services/email';
 
+/**
+ * A scheduled unit of work, defined once and triggered two ways.
+ *
+ * `node-cron` inside the process is one trigger. An authenticated HTTP call to
+ * `/api/cron/:schedule` is the other, and it is the one that has to work on a
+ * host that sleeps: Render's free tier suspends after 15 minutes idle, and a
+ * suspended process runs no timers. Keeping a single list means the two
+ * triggers cannot drift into doing different work — which matters most for the
+ * job nobody notices until it stops, the three-day expiry email.
+ */
+export type ScheduledJob = {
+  name: string;
+  run: () => Promise<unknown>;
+  /** Returns a reason to skip, or null to run. Used for feature-flagged work. */
+  skip?: () => string | null;
+};
+
+export const DAILY_JOBS: ScheduledJob[] = [
+  {
+    name: 'auto-payment-reminders',
+    // Off. The function is untouched and still exported — restoring it is
+    // flipping AUTO_PAYMENTS back to true. It never sent anything in production
+    // anyway: it only looks at merchants with a *verified* Stripe Connect
+    // account, and none exist.
+    skip: () => (FEATURES.AUTO_PAYMENTS ? null : 'AUTO_PAYMENTS is off'),
+    run: runAutoPaymentReminders,
+  },
+  { name: 'trial-expiry-check', run: runTrialExpiryCheck },
+  { name: 'merchant-trial-expiry', run: runMerchantTrialExpiry },
+  { name: 'subscription-expiry', run: runSubscriptionExpiry },
+  { name: 'customer-days-maintenance', run: runCustomerDaysMaintenance },
+  { name: 'inventory-deduction', run: () => runInventoryDeduction() },
+  { name: 'auto-resume-paused-customers', run: runAutoResumePausedCustomers },
+];
+
+export const NIGHTLY_JOBS: ScheduledJob[] = [
+  { name: 'delivery-photo-cleanup', run: runDeliveryPhotoCleanup },
+];
+
+export const SCHEDULES = {
+  /** 05:00 UTC */
+  daily: DAILY_JOBS,
+  /** 22:00 UTC */
+  nightly: NIGHTLY_JOBS,
+} as const;
+
+export type ScheduleName = keyof typeof SCHEDULES;
+
+/**
+ * Run a schedule and report per-job outcomes.
+ *
+ * One job failing must not stop the rest — they are independent, and the run
+ * that cleans up photos should not be lost because inventory deduction threw.
+ * Every job is reported either way, so an HTTP caller can tell the difference
+ * between "ran, nothing to do" and "never ran", which the old fire-and-forget
+ * console.log could not.
+ */
+export async function runSchedule(schedule: ScheduleName) {
+  const jobs = SCHEDULES[schedule];
+  const started = Date.now();
+  const results: Array<{ job: string; status: 'ok' | 'skipped' | 'failed'; detail?: unknown }> = [];
+
+  for (const job of jobs) {
+    const skipReason = job.skip?.() ?? null;
+    if (skipReason) {
+      console.log(`[Cron] Skipping ${job.name}: ${skipReason}`);
+      results.push({ job: job.name, status: 'skipped', detail: skipReason });
+      continue;
+    }
+
+    console.log(`[Cron] Running ${job.name}...`);
+    try {
+      const detail = await job.run();
+      console.log(`[Cron] ${job.name} complete:`, detail);
+      results.push({ job: job.name, status: 'ok', detail });
+    } catch (error: any) {
+      console.error(`[Cron] ${job.name} failed:`, error);
+      results.push({ job: job.name, status: 'failed', detail: error?.message || String(error) });
+    }
+  }
+
+  return {
+    schedule,
+    ran_at: new Date().toISOString(),
+    duration_ms: Date.now() - started,
+    failed: results.filter((r) => r.status === 'failed').length,
+    results,
+  };
+}
+
+/**
+ * In-process scheduling. Correct on an always-on host and useless on one that
+ * sleeps, so it can be turned off without deleting it: set INTERNAL_CRON=false
+ * on Render, where GitHub Actions calls the HTTP endpoint instead. Leaving both
+ * on would double-run every job.
+ */
 export function startCronJobs() {
-  // Run daily at 5 AM UTC - payment reminders & trial expiry
-  cron.schedule('0 5 * * *', async () => {
-    // Automatic payment reminders are off. The function is untouched and still
-    // exported — restoring it is flipping AUTO_PAYMENTS back to true. It never
-    // sent anything in production anyway: it only looks at merchants with a
-    // *verified* Stripe Connect account, and none exist.
-    if (FEATURES.AUTO_PAYMENTS) {
-      console.log('[Cron] Running automatic payment reminders...');
-      try {
-        const result = await runAutoPaymentReminders();
-        console.log('[Cron] Payment reminders complete:', result);
-      } catch (error) {
-        console.error('[Cron] Payment reminders failed:', error);
-      }
-    }
+  if (process.env.INTERNAL_CRON === 'false') {
+    console.log('[Cron] In-process cron disabled (INTERNAL_CRON=false) — expecting external triggers on /api/cron/:schedule');
+    return;
+  }
 
-    console.log('[Cron] Running trial expiry check...');
-    try {
-      const result = await runTrialExpiryCheck();
-      console.log('[Cron] Trial expiry check complete:', result);
-    } catch (error) {
-      console.error('[Cron] Trial expiry check failed:', error);
-    }
+  cron.schedule('0 5 * * *', () => { void runSchedule('daily'); });
+  cron.schedule('0 22 * * *', () => { void runSchedule('nightly'); });
 
-    console.log('[Cron] Running merchant trial expiry...');
-    try {
-      const result = await runMerchantTrialExpiry();
-      console.log('[Cron] Merchant trial expiry complete:', result);
-    } catch (error) {
-      console.error('[Cron] Merchant trial expiry failed:', error);
-    }
-
-    console.log('[Cron] Running subscription expiry...');
-    try {
-      const result = await runSubscriptionExpiry();
-      console.log('[Cron] Subscription expiry complete:', result);
-    } catch (error) {
-      console.error('[Cron] Subscription expiry failed:', error);
-    }
-
-    console.log('[Cron] Running customer days maintenance...');
-    try {
-      const result = await runCustomerDaysMaintenance();
-      console.log('[Cron] Customer days maintenance complete:', result);
-    } catch (error) {
-      console.error('[Cron] Customer days maintenance failed:', error);
-    }
-
-    console.log('[Cron] Running inventory deduction...');
-    try {
-      const result = await runInventoryDeduction();
-      console.log('[Cron] Inventory deduction complete:', result);
-    } catch (error) {
-      console.error('[Cron] Inventory deduction failed:', error);
-    }
-
-    console.log('[Cron] Running auto-resume for paused customers...');
-    try {
-      const result = await runAutoResumePausedCustomers();
-      console.log('[Cron] Auto-resume complete:', result);
-    } catch (error) {
-      console.error('[Cron] Auto-resume failed:', error);
-    }
-  });
-
-  // Run daily at 10 PM UTC - delivery photo cleanup + location cleanup
-  cron.schedule('0 22 * * *', async () => {
-    console.log('[Cron] Running delivery photo cleanup...');
-    try {
-      const result = await runDeliveryPhotoCleanup();
-      console.log('[Cron] Photo cleanup complete:', result);
-    } catch (error) {
-      console.error('[Cron] Photo cleanup failed:', error);
-    }
-  });
-
-  console.log('Cron jobs started');
+  console.log('Cron jobs started (in-process)');
 }
 
 export async function runDeliveryPhotoCleanup() {

@@ -1,0 +1,102 @@
+name: Scheduled jobs
+
+# Triggers the maintenance jobs that used to run on node-cron inside the API.
+#
+# Why this exists: Render's free tier suspends the process after 15 minutes
+# idle, and a suspended process runs no timers. In-process cron is silently
+# reliable right up until the host sleeps, and then it is silently broken —
+# nobody notices a job that stops running. This makes the schedule external and
+# visible: a missed or failed run is a red mark in the Actions tab.
+#
+# The work itself lives in src/cron.ts. This only pulls the trigger.
+#
+# Setup (repository Settings → Secrets and variables → Actions):
+#   secret  CRON_SECRET  — must match the CRON_SECRET env var on the API host
+#   secret  API_BASE_URL — e.g. https://tiffinhub-api.onrender.com (no trailing slash)
+#
+# Until the Render cutover, leave INTERNAL_CRON unset on Railway and this
+# workflow disabled — running both would execute every job twice.
+
+on:
+  schedule:
+    # GitHub Actions cron is always UTC. These match the old node-cron times.
+    - cron: '0 5 * * *'   # daily  — expiry alerts, trials, maintenance, inventory
+    - cron: '0 22 * * *'  # nightly — delivery photo and location cleanup
+  workflow_dispatch:
+    inputs:
+      schedule:
+        description: 'Which schedule to run'
+        required: true
+        type: choice
+        options: [daily, nightly]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Decide which schedule this run is for
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "schedule=${{ inputs.schedule }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 22 * * *" ]; then
+            echo "schedule=nightly" >> "$GITHUB_OUTPUT"
+          else
+            echo "schedule=daily" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wake the API
+        # Render free sleeps after 15 minutes and cold-starts in roughly 50
+        # seconds. Waking it first means the real call is not the one that eats
+        # the cold start and times out. Failures here are not fatal — the retry
+        # loop below is what decides.
+        continue-on-error: true
+        run: |
+          curl -sS --max-time 90 -o /dev/null \
+            "${{ secrets.API_BASE_URL }}/api/health" || echo "wake call did not answer; continuing"
+
+      - name: Trigger ${{ steps.pick.outputs.schedule }}
+        env:
+          SCHEDULE: ${{ steps.pick.outputs.schedule }}
+        run: |
+          set -uo pipefail
+
+          for attempt in 1 2 3; do
+            echo "::group::Attempt $attempt"
+            code=$(curl -sS --max-time 600 \
+              -o response.json -w '%{http_code}' \
+              -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H 'Content-Type: application/json' \
+              "${{ secrets.API_BASE_URL }}/api/cron/${SCHEDULE}") || code="000"
+
+            echo "HTTP $code"
+            cat response.json 2>/dev/null || true
+            echo ""
+            echo "::endgroup::"
+
+            # 200 means every job in the schedule reported ok or skipped.
+            if [ "$code" = "200" ]; then
+              echo "$SCHEDULE completed"
+              exit 0
+            fi
+
+            # A wrong or missing secret will never succeed on retry, and 503
+            # means the host has no CRON_SECRET configured. Fail immediately
+            # rather than burning three attempts on a misconfiguration.
+            if [ "$code" = "401" ] || [ "$code" = "503" ]; then
+              echo "::error::Cron endpoint rejected the call (HTTP $code). Check the CRON_SECRET secret here matches the API host."
+              exit 1
+            fi
+
+            echo "Attempt $attempt did not succeed (HTTP $code)"
+            [ "$attempt" -lt 3 ] && sleep 60
+          done
+
+          # The jobs are individually idempotent — inventory deduction is
+          # guarded by last_deducted_date, and the expiry email by
+          # notification_sent — so retrying is safe and a genuine failure is
+          # worth being loud about.
+          echo "::error::$SCHEDULE failed after 3 attempts. See the response body above for which job failed."
+          exit 1
