@@ -4,8 +4,13 @@ import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
 import { generateToken, authMiddleware, superAdminOnly, AuthRequest, blockIfImpersonating } from '../middleware/auth';
 import { sendEmail } from '../services/email';
+import { OAuth2Client } from 'google-auth-library';
 
 const router = Router();
+
+// Verifies Google ID tokens. Constructed once — it caches Google's signing keys,
+// so a per-request client would refetch them on every sign-in.
+const googleClient = new OAuth2Client();
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -172,6 +177,97 @@ router.post('/login', async (req, res) => {
     res.json({ token, user: safeUser });
   } catch (error: any) {
     console.error('[Login] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/auth/google
+//
+// Takes the ID token Google Identity Services hands the browser, verifies it
+// against Google, and returns this app's own JWT. Nothing about the session
+// afterwards depends on Google — sign-in is the only place it is involved, so a
+// blocked Google domain costs a merchant the button, not their account.
+router.post('/google', async (req, res) => {
+  try {
+    const { credential, country, timezone, currency } = req.body;
+    if (!credential) {
+      return res.status(400).json({ error: 'Missing Google credential' });
+    }
+
+    const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+    if (!clientId) {
+      // Fails closed and says why: a misconfigured server should not look to the
+      // user like Google rejected them.
+      return res.status(503).json({ error: 'Google Sign-In is not configured on this server.' });
+    }
+
+    let payload;
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: clientId });
+      payload = ticket.getPayload();
+    } catch {
+      return res.status(401).json({ error: 'Could not verify that Google account.' });
+    }
+
+    if (!payload?.email) {
+      return res.status(401).json({ error: 'Google account has no email address.' });
+    }
+    // Without this check anyone could register an unverified address at a domain
+    // they do not control and take over the matching account below.
+    if (payload.email_verified === false) {
+      return res.status(401).json({ error: 'That Google account has no verified email address.' });
+    }
+
+    const email = payload.email.toLowerCase();
+    const googleId = payload.sub;
+
+    // google_id first: a merchant who changes the email on their Google account
+    // should keep the same TiffinHub account, not silently get a second one.
+    let user = await prisma.user.findFirst({ where: { google_id: googleId } });
+
+    if (!user) {
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        // Same person arriving by a different door — link, do not duplicate.
+        // Their password still works; this only adds Google as a second way in.
+        user = await prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            google_id: googleId,
+            ...(existing.full_name ? {} : { full_name: payload.name || null }),
+          },
+        });
+      }
+    }
+
+    let isNew = false;
+    if (!user) {
+      const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      user = await prisma.user.create({
+        data: {
+          email,
+          google_id: googleId,
+          // No password at all rather than an unusable random one, so /login can
+          // tell this person to use Google instead of failing opaquely.
+          password_hash: null,
+          full_name: payload.name || null,
+          subscription_status: 'trial',
+          plan_type: 'trial',
+          subscription_source: 'trial',
+          trial_ends_at: trialEndsAt,
+          ...(country ? { country } : {}),
+          ...(timezone ? { timezone } : {}),
+          ...(currency ? { currency } : {}),
+        },
+      });
+      isNew = true;
+    }
+
+    const token = generateToken(user.id);
+    const { password_hash: _ph, ...safeUser } = user as any;
+    res.json({ token, user: safeUser, is_new: isNew });
+  } catch (error: any) {
+    console.error('[Google Sign-In] Error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
