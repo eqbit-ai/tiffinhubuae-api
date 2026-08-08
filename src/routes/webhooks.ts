@@ -412,12 +412,32 @@ router.post('/stripe', async (req: Request, res: Response) => {
           console.log(`[Webhook] Platform subscription — userEmail: ${userEmail}, subscriptionId: ${sessionSubscriptionId}`);
           if (!sessionSubscriptionId) { console.log('[Webhook] No subscription ID found on checkout session'); break; }
 
-          // Idempotency: check if we already recorded this payment
+          // Idempotency.
+          //
+          // This keyed on session.payment_intent, which is null for every
+          // subscription checkout — subscriptions bill through invoices and
+          // never carry a payment intent on the session. So the query became
+          // `stripe_payment_id: null`, which matches any earlier row that also
+          // has none. All seven rows in production are such rows, so this
+          // branch skipped every subscription anyone has ever paid for: Stripe
+          // took the money and activated the subscription, the webhook returned
+          // 200, and the merchant was left on trial, locked out of the app they
+          // had just paid for.
+          //
+          // Key on the payment intent when there is one, and otherwise on the
+          // subscription, which identifies this checkout exactly. Never query on
+          // a null — "no id" is not an id, and matching it matches everything.
+          const paymentIntentId =
+            typeof session.payment_intent === 'string' ? session.payment_intent : null;
           const existingHistory = await prisma.paymentHistory.findFirst({
-            where: { stripe_payment_id: session.payment_intent as string },
+            where: paymentIntentId
+              ? { stripe_payment_id: paymentIntentId }
+              : { subscription_id: sessionSubscriptionId },
           });
           if (existingHistory) {
-            console.log(`[Webhook] Platform subscription already processed for payment_intent ${session.payment_intent} — skipping`);
+            console.log(
+              `[Webhook] Platform subscription already processed (${paymentIntentId ? `payment_intent ${paymentIntentId}` : `subscription ${sessionSubscriptionId}`}) — skipping`
+            );
             break;
           }
 
@@ -487,7 +507,10 @@ router.post('/stripe', async (req: Request, res: Response) => {
               currency: paidCurrency,
               status: 'succeeded',
               payment_date: new Date(),
-              stripe_payment_id: session.payment_intent as string,
+              // null for a subscription checkout, and stored as null rather
+              // than cast to a string, so the idempotency check above can tell
+              // "no payment intent" from a real one.
+              stripe_payment_id: paymentIntentId,
               payment_method_last4: last4,
             },
           });
