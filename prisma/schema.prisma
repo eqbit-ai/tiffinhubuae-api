@@ -16,7 +16,13 @@ model User {
   password_hash                  String?
   // Google's stable subject id. Matched on before email so that changing the
   // email on a Google account does not orphan the login.
-  google_id                      String?   @unique
+  //
+  // Deliberately NOT @unique: adding a unique constraint is a data-loss warning
+  // to `prisma db push`, which runs without --accept-data-loss on boot, so it
+  // fails the deploy outright. Uniqueness belongs in a migration, not here.
+  // Until then the sign-in path looks up by google_id and will not create a
+  // second account for one Google subject.
+  google_id                      String?
   full_name                      String?
   role                           String    @default("user")
   phone                          String?
@@ -84,6 +90,7 @@ model User {
   activityLogs     ActivityLog[]
   tiffinAttributes TiffinAttribute[]
   paymentLinks     PaymentLink[]
+  @@index([google_id])
 }
 
 model Customer {
