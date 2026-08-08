@@ -1,6 +1,7 @@
 import twilio from 'twilio';
 import { TEMPLATES } from './whatsappTemplates';
 import { prisma } from '../lib/prisma';
+import { FEATURES } from '../lib/features';
 
 interface WhatsAppParams {
   to: string;
@@ -10,6 +11,16 @@ interface WhatsAppParams {
 }
 
 export async function sendWhatsAppMessage(params: WhatsAppParams) {
+  // The single chokepoint for outbound WhatsApp. Every caller — merchant order
+  // alerts, manual reminders, payment links, portal OTP — funnels through here,
+  // so this one guard is what actually stops the product sending anything.
+  // Returns the same shape a missing-Twilio-config send returns, which every
+  // caller already handles, so nothing throws and no caller needed changing.
+  if (!FEATURES.WHATSAPP_NOTIFICATIONS) {
+    console.log('[WhatsApp] Disabled by feature flag, not sending');
+    return { success: false, reason: 'WhatsApp notifications are disabled' };
+  }
+
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   const fromNumber = process.env.TWILIO_WHATSAPP_FROM;
@@ -75,6 +86,13 @@ export async function sendWhatsAppMessage(params: WhatsAppParams) {
 
 // Merchant-aware wrapper: checks 400 limit, sends, increments count
 export async function sendMerchantWhatsApp(merchantId: string, params: WhatsAppParams) {
+  // Checked here too, ahead of the lookup, so a disabled send costs no database
+  // round-trip. sendWhatsAppMessage would refuse it anyway.
+  if (!FEATURES.WHATSAPP_NOTIFICATIONS) {
+    console.log('[WhatsApp] Disabled by feature flag, not sending');
+    return { success: false, reason: 'WhatsApp notifications are disabled' };
+  }
+
   const merchant = await prisma.user.findUnique({
     where: { id: merchantId },
     select: { whatsapp_sent_count: true, whatsapp_limit: true },

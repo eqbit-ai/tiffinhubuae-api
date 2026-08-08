@@ -11,6 +11,7 @@ import { uploadToCloudinary } from '../lib/cloudinary';
 import { addDays, format } from 'date-fns';
 import { isWeekendDate } from '../lib/weekend';
 import { calculatePlatformFee, DEFAULT_FEE_PERCENTAGE } from '../lib/fees';
+import { requireFeature } from '../lib/features';
 
 const router = Router();
 
@@ -104,7 +105,7 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
 });
 
 // ─── Send WhatsApp Message ────────────────────────────────────
-router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthRequest, res) => {
+router.post('/send-whatsapp-message', requireFeature('WHATSAPP_NOTIFICATIONS'), checkPremiumAccess, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const { message, customerId } = req.body;
@@ -157,7 +158,7 @@ router.post('/send-whatsapp-message', checkPremiumAccess, async (req: AuthReques
 });
 
 // ─── Send Payment Reminder ────────────────────────────────────
-router.post('/send-payment-reminder', checkPremiumAccess, async (req: AuthRequest, res) => {
+router.post('/send-payment-reminder', requireFeature('WHATSAPP_NOTIFICATIONS'), checkPremiumAccess, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const { customerId } = req.body;
@@ -1181,7 +1182,7 @@ router.post('/manage-user', superAdminOnly, async (req: AuthRequest, res) => {
 // Impersonate endpoint is in auth.ts — this duplicate was removed
 
 // ─── Create Customer Payment Checkout ─────────────────────────
-router.post('/create-customer-payment-checkout', blockIfImpersonating, async (req: AuthRequest, res) => {
+router.post('/create-customer-payment-checkout', requireFeature('STRIPE_CONNECT'), blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
 
@@ -1255,7 +1256,7 @@ router.post('/create-customer-payment-checkout', blockIfImpersonating, async (re
 });
 
 // ─── Generate Customer Payment Link ──────────────────────────
-router.post('/generate-customer-payment-link', blockIfImpersonating, async (req: AuthRequest, res) => {
+router.post('/generate-customer-payment-link', requireFeature('STRIPE_CONNECT'), blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const { customerId, amount: reqAmount, description } = req.body;
@@ -1343,7 +1344,7 @@ router.post('/generate-customer-payment-link', blockIfImpersonating, async (req:
 });
 
 // ─── Create Stripe Connect Account ───────────────────────────
-router.post('/create-stripe-connect-account', blockIfImpersonating, async (req: AuthRequest, res) => {
+router.post('/create-stripe-connect-account', requireFeature('STRIPE_CONNECT'), blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     const origin = req.headers.origin || process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -1398,7 +1399,7 @@ router.post('/create-stripe-connect-account', blockIfImpersonating, async (req: 
 });
 
 // ─── Get Stripe Account Status ───────────────────────────────
-router.post('/get-stripe-account-status', async (req: AuthRequest, res) => {
+router.post('/get-stripe-account-status', requireFeature('STRIPE_CONNECT'), async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     if (!user.stripe_connect_account_id) {
@@ -1447,7 +1448,7 @@ router.post('/get-stripe-account-status', async (req: AuthRequest, res) => {
 });
 
 // ─── Disconnect Payment Account ──────────────────────────────
-router.post('/disconnect-payment-account', blockIfImpersonating, async (req: AuthRequest, res) => {
+router.post('/disconnect-payment-account', requireFeature('STRIPE_CONNECT'), blockIfImpersonating, async (req: AuthRequest, res) => {
   try {
     const user = req.user!;
     await prisma.user.update({
