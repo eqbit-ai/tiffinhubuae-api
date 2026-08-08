@@ -398,6 +398,28 @@ model SupportTicket {
   @@index([user_email])
 }
 
+/// Merchant wishlist — features people want that the app does not have yet.
+/// Scoped by user_email like SupportTicket, so a merchant sees only their own
+/// requests; the super admin reads across tenants with { all: true } and is the
+/// only one who can move `status` or write `admin_notes`.
+model FeatureRequest {
+  id            String    @id @default(cuid())
+  user_email    String
+  user_name     String?
+  business_name String?
+  title         String
+  description   String?
+  category      String?   @default("general")
+  // submitted | planned | in_progress | shipped | declined
+  status        String    @default("submitted")
+  admin_notes   String?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@index([user_email])
+  @@index([status])
+}
+
 model Subscription {
   id                      String    @id @default(cuid())
   user_email              String

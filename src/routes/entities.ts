@@ -139,6 +139,7 @@ const entityConfig: Record<string, {
   purchases: { model: () => prisma.purchase, ownerField: 'created_by', ownerValue: 'id' },
   wastages: { model: () => prisma.wastage, ownerField: 'created_by', ownerValue: 'id' },
   support_tickets: { model: () => prisma.supportTicket, ownerField: 'user_email', ownerValue: 'email' },
+  feature_requests: { model: () => prisma.featureRequest, ownerField: 'user_email', ownerValue: 'email' },
   // Written only by the Stripe webhook — a client-writable billing row plus
   // /check-subscription-status was a route to self-granting premium.
   subscriptions: { model: () => prisma.subscription, ownerField: 'user_email', ownerValue: 'email', readOnly: true },
