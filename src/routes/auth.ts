@@ -105,9 +105,9 @@ router.post('/register', async (req, res) => {
               <p style="margin: 0 0 8px; font-weight: bold; color: #166534;">Your trial includes:</p>
               <ul style="margin: 0; padding-left: 20px; color: #15803d; font-size: 14px; line-height: 1.8;">
                 <li>Unlimited customers & orders</li>
-                <li>Delivery management with driver tracking</li>
-                <li>WhatsApp notifications & payment reminders</li>
-                <li>Kitchen display, labels, analytics & more</li>
+                <li>Delivery rounds with a driver app and photo proof</li>
+                <li>Kitchen display, delivery labels and menu pamphlets</li>
+                <li>Invoices, analytics and data export</li>
               </ul>
             </div>
             <p style="font-size: 15px; color: #475569;">
