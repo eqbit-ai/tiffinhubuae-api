@@ -12,6 +12,7 @@ import { addDays, format } from 'date-fns';
 import { isWeekendDate } from '../lib/weekend';
 import { calculatePlatformFee, DEFAULT_FEE_PERCENTAGE } from '../lib/fees';
 import { requireFeature } from '../lib/features';
+import { logActivity } from '../lib/activityLog';
 
 const router = Router();
 
@@ -315,6 +316,17 @@ router.post('/cancel-subscription', blockIfImpersonating, async (req: AuthReques
       });
     }
 
+    await logActivity({
+      userEmail: user.email,
+      userName: user.full_name,
+      actionType: 'subscription_cancelled',
+      entityType: 'Subscription',
+      entityId: subscription.id,
+      description: `Cancelled at period end — access until ${accessEndsAt ? new Date(accessEndsAt).toISOString().slice(0, 10) : 'unknown'}`,
+      metadata: { access_until: accessEndsAt, stripe_status: subscription.status },
+      createdBy: user.id,
+    });
+
     res.json({ success: true, access_until: accessEndsAt, status: subscription.status, cancel_at_period_end: true });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
@@ -356,6 +368,17 @@ router.post('/resume-subscription', blockIfImpersonating, async (req: AuthReques
           next_billing_date: new Date(subscription.current_period_end * 1000),
         }),
       },
+    });
+
+    await logActivity({
+      userEmail: user.email,
+      userName: user.full_name,
+      actionType: 'subscription_resumed',
+      entityType: 'Subscription',
+      entityId: subscription.id,
+      description: 'Resumed a subscription that was set to cancel at period end',
+      metadata: { stripe_status: subscription.status },
+      createdBy: user.id,
     });
 
     res.json({ success: true, status: subscription.status });
@@ -569,6 +592,21 @@ router.post('/clear-deleted-customers', async (req: AuthRequest, res) => {
     const result = await prisma.customer.deleteMany({
       where: { created_by: user.id, is_deleted: true },
     });
+
+    // Permanent and bulk — the one destructive action with nothing left to
+    // inspect afterwards, so the count is the only record that it happened.
+    if (result.count > 0) {
+      await logActivity({
+        userEmail: user.email,
+        userName: user.full_name,
+        actionType: 'customers_purged',
+        entityType: 'Customer',
+        description: `Permanently deleted ${result.count} customer(s) that were in the deleted state`,
+        metadata: { count: result.count },
+        createdBy: user.id,
+      });
+    }
+
     res.json({ success: true, deleted: result.count });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
@@ -1101,6 +1139,17 @@ router.post('/manual-grant-access', superAdminOnly, async (req: AuthRequest, res
       },
     });
 
+    await logActivity({
+      userEmail: targetUser.email,
+      userName: targetUser.full_name,
+      actionType: 'access_granted',
+      entityType: 'User',
+      entityId: targetUser.id,
+      description: `Admin ${req.user!.email} granted ${planType} access until ${expiryDate ? new Date(expiryDate).toISOString().slice(0, 10) : 'no expiry'}`,
+      metadata: { admin: req.user!.email, plan_type: planType, expires: expiryDate },
+      createdBy: req.user!.id,
+    });
+
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
@@ -1144,6 +1193,17 @@ router.post('/revoke-user-access', superAdminOnly, async (req: AuthRequest, res)
     });
 
     console.log(`[ACCESS REVOKED] Admin ${req.user!.email} revoked access for ${targetUserEmail}${reason ? ` (reason: ${reason})` : ''}`);
+
+    await logActivity({
+      userEmail: targetUser.email,
+      userName: targetUser.full_name,
+      actionType: 'access_revoked',
+      entityType: 'User',
+      entityId: targetUser.id,
+      description: `Admin ${req.user!.email} revoked access${reason ? ` — ${String(reason).slice(0, 200)}` : ''}`,
+      metadata: { admin: req.user!.email, reason: reason || null },
+      createdBy: req.user!.id,
+    });
     res.json({ success: true, message: `Revoked access for ${targetUserEmail}` });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
