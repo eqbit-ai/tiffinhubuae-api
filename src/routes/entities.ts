@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, checkActiveSubscription, AuthRequest } from '../middleware/auth';
 import { isWeekendDate, todayInTimezone } from '../lib/weekend';
@@ -15,8 +16,41 @@ function safeError(error: any): string {
   return 'Something went wrong. Please try again.';
 }
 
+/**
+ * Scalar field names by category, read from the Prisma schema instead of being
+ * hand-listed.
+ *
+ * The three sets below were maintained by hand, so every column added since was
+ * a latent 500 on save. `usage_per_tiffin` is a Float that was never added: an
+ * Ingredient saved with that box empty reached Prisma as `""` and blew up with
+ * "Expected Float ... provided String", which the catch-all reported as a 500.
+ * Seventeen numeric columns were in that state, `last_purchase_date` among the
+ * dates. Deriving from the DMMF means a new column is covered the moment it
+ * exists in the schema.
+ *
+ * A union across models rather than a per-model lookup: no field name maps to
+ * two different categories anywhere in the schema, so this is exactly as precise
+ * and leaves every call site unchanged.
+ */
+function schemaFieldsOfType(...types: string[]): Set<string> {
+  const names = new Set<string>();
+  for (const model of Prisma.dmmf.datamodel.models) {
+    for (const field of model.fields) {
+      if (field.kind === 'scalar' && !field.isList && types.includes(field.type)) {
+        names.add(field.name);
+      }
+    }
+  }
+  return names;
+}
+
+// The literal lists are kept as a floor, not as the source of truth: a few names
+// in them (`count`, `rating`, `outstanding`, ...) are no longer columns at all,
+// and silently dropping them would change what gets coerced for those callers.
+
 // Date fields that need ISO conversion per entity
 const dateFields = new Set([
+  ...schemaFieldsOfType('DateTime'),
   'start_date', 'end_date', 'due_date', 'last_payment_date', 'deleted_at',
   'pause_start', 'pause_end', 'trial_ends_at', 'subscription_ends_at',
   'current_period_end', 'next_billing_date', 'cancelled_at', 'trial_cancelled_at',
@@ -28,6 +62,7 @@ const dateFields = new Set([
 
 // Boolean fields that may arrive as strings from CSV imports
 const booleanFields = new Set([
+  ...schemaFieldsOfType('Boolean'),
   'active', 'is_deleted', 'is_paused', 'skip_weekends', 'is_active', 'is_critical',
   'carry_forward_applied', 'read', 'is_read', 'email_sent', 'notification_sent',
   'reminder_before_sent', 'reminder_after_sent', 'is_trial', 'trial_converted',
@@ -41,6 +76,7 @@ const booleanFields = new Set([
 
 // Fields that are Float/Int in Prisma — empty strings must become null or 0
 const numericFields = new Set([
+  ...schemaFieldsOfType('Float', 'Int', 'Decimal', 'BigInt'),
   'payment_amount', 'last_payment_amount', 'paid_days', 'delivered_days', 'days_remaining',
   'meals_delivered', 'tiffin_balance', 'roti_quantity', 'total_pause_days',
   'price', 'current_stock', 'min_stock_threshold', 'cost_per_unit', 'total_value',
