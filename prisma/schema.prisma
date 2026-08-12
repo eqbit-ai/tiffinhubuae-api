@@ -75,6 +75,23 @@ model User {
   // counting customers, because a stored flag drifts from reality and a derived
   // one cannot lie.
   onboarding_state               Json?
+
+  // Win-back. Two nullable stamps rather than a status column: the only question
+  // either job asks is "has this one already gone out", and a null answers it
+  // without needing a new enum value every time the sequence changes. They are
+  // also the record of what was sent to whom, which is the thing you want when
+  // someone replies "why are you emailing me".
+  //
+  // marketing_opt_out gates every non-transactional send. It is never cleared by
+  // us — an unsubscribe is a decision, and re-subscribing someone because a
+  // later job found them eligible again is exactly the behaviour that gets a
+  // sending domain blacklisted. Password resets and expiry alerts ignore it:
+  // those are transactional and a merchant cannot opt out of the product
+  // talking to them about their own account.
+  winback_sent_at                DateTime?
+  winback_followup_sent_at       DateTime?
+  marketing_opt_out              Boolean?  @default(false)
+
   created_at                     DateTime  @default(now())
   updated_at                     DateTime  @updatedAt
 
@@ -576,6 +593,12 @@ model DeliveryItem {
   id                 String    @id @default(cuid())
   batch_id           String
   customer_id        String
+  // The Order this drop is for. Without it a driver marking a delivery in the
+  // driver app updated only DeliveryItem, and the merchant's Delivery
+  // Management screen — which reads the stamps on Order — never saw it, so the
+  // two screens disagreed about the same delivery. Nullable because rows
+  // created before this column existed have no order to point at.
+  order_id           String?
   customer_name      String?
   customer_phone     String?
   customer_address   String?
@@ -596,6 +619,7 @@ model DeliveryItem {
 
   @@index([batch_id])
   @@index([created_by])
+  @@index([order_id])
 }
 
 model Kitchen {

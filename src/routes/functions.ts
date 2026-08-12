@@ -9,7 +9,8 @@ import { stripe, STRIPE_PREMIUM_PRICE_ID } from '../services/stripe';
 import { sendPushToUser, sendPushToUserByEmail } from '../services/pushNotification';
 import { uploadToCloudinary } from '../lib/cloudinary';
 import { addDays, format } from 'date-fns';
-import { isWeekendDate } from '../lib/weekend';
+import { isWeekendDate, todayInTimezone } from '../lib/weekend';
+import { syncDeliveryStatus } from '../lib/deliveryStatus';
 import { calculatePlatformFee, DEFAULT_FEE_PERCENTAGE } from '../lib/fees';
 import { requireFeature } from '../lib/features';
 import { logActivity } from '../lib/activityLog';
@@ -1999,6 +2000,150 @@ router.post('/generate-portal-link', async (req: AuthRequest, res) => {
 });
 
 // ─── Generate Referral Code ───────────────────────────────────
+// ─── Assign an area to a driver ───────────────────────────────
+//
+// This is the write that was missing. DeliveryBatch and DeliveryItem have
+// existed since the first migration and the driver app reads them — batches for
+// today where driver_id is the signed-in driver — but nothing in the product
+// ever created one, so every driver who signed in saw an empty round.
+//
+// One call per stop: "these orders, this area, this driver, this run". The
+// orders are re-read under the caller's id rather than trusted from the body,
+// and the customer snapshot is taken from the live Customer row so the address
+// on the driver's screen is the latest saved one.
+//
+// Re-assigning a stop replaces its batch rather than adding a second one;
+// merchants change their mind about who is driving where, and two batches for
+// the same area would show the round twice.
+router.post('/assign-area', async (req: AuthRequest, res) => {
+  try {
+    const user = req.user!;
+    const { orderIds, driverId, meal, areaLabel, deliveryDate } = req.body as {
+      orderIds?: string[];
+      driverId?: string;
+      meal?: string;
+      areaLabel?: string;
+      deliveryDate?: string;
+    };
+
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ error: 'orderIds array required' });
+    }
+    if (meal !== 'Lunch' && meal !== 'Dinner') {
+      return res.status(400).json({ error: "meal must be 'Lunch' or 'Dinner'" });
+    }
+    if (!driverId) {
+      return res.status(400).json({ error: 'driverId required' });
+    }
+
+    // The date comes from the caller so the batch is stamped with the
+    // merchant's calendar day, not the server's. Railway runs in UTC, and a
+    // Dubai merchant assigning a lunch round at 01:00 local is still on the
+    // previous UTC day — a batch stamped in UTC would be invisible to the
+    // driver for the whole morning. Validated, then defaulted to the
+    // merchant's own timezone.
+    const date =
+      typeof deliveryDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)
+        ? deliveryDate
+        : todayInTimezone((user as any)?.timezone);
+
+    const driver = await prisma.driver.findFirst({
+      where: { id: driverId, created_by: user.id, is_active: true },
+    });
+    if (!driver) return res.status(404).json({ error: 'Driver not found' });
+
+    // Tenant isolation: created_by comes from the token, never the body.
+    const orders = await prisma.order.findMany({
+      where: { id: { in: orderIds }, created_by: user.id },
+    });
+    if (orders.length === 0) return res.status(404).json({ error: 'No matching orders' });
+
+    const customers = await prisma.customer.findMany({
+      where: { id: { in: orders.map((o) => o.customer_id) }, created_by: user.id },
+    });
+    const customerById = new Map(customers.map((c) => [c.id, c]));
+
+    const area = (areaLabel || '').trim() || 'Unassigned';
+    const batchName = `${meal} · ${area}`;
+
+    const batch = await prisma.$transaction(async (tx) => {
+      // Replace any previous assignment of this stop on this run. Items go
+      // first — DeliveryItem.batch_id has no FK, so orphans would otherwise
+      // linger and keep counting toward a batch that no longer exists.
+      const previous = await tx.deliveryBatch.findMany({
+        where: { created_by: user.id, delivery_date: date, name: batchName },
+        select: { id: true },
+      });
+      if (previous.length > 0) {
+        await tx.deliveryItem.deleteMany({
+          where: { batch_id: { in: previous.map((b) => b.id) } },
+        });
+        await tx.deliveryBatch.deleteMany({ where: { id: { in: previous.map((b) => b.id) } } });
+      }
+
+      const created = await tx.deliveryBatch.create({
+        data: {
+          name: batchName,
+          area,
+          driver_id: driver.id,
+          driver_name: driver.name,
+          delivery_date: date,
+          status: 'pending',
+          total_orders: orders.length,
+          delivered_count: 0,
+          created_by: user.id,
+        },
+      });
+
+      await tx.deliveryItem.createMany({
+        data: orders.map((order) => {
+          const customer = customerById.get(order.customer_id);
+          // Per-meal addresses: a customer can take lunch at the office and
+          // dinner at home, so the drop shows the address for THIS run.
+          const address =
+            (meal === 'Lunch' ? customer?.lunch_address : customer?.dinner_address) ||
+            customer?.address ||
+            null;
+
+          return {
+            batch_id: created.id,
+            order_id: order.id,
+            customer_id: order.customer_id,
+            customer_name: customer?.full_name ?? null,
+            customer_phone: customer?.phone_number ?? null,
+            customer_address: address,
+            area: customer?.area ?? null,
+            // The run this drop belongs to, not the order's "Lunch + Dinner".
+            // The driver is doing one of the two trips.
+            meal_type: meal,
+            special_notes: customer?.special_notes ?? null,
+            status: 'pending',
+            created_by: user.id,
+          };
+        }),
+      });
+
+      return created;
+    });
+
+    // Deliberately nothing written to Order here. Its only driver column is
+    // `delivered_by`, which means "who actually delivered this", stamped at
+    // mark-time — filling it at assign-time would claim a delivery that has not
+    // happened. Who is *assigned* lives on the batch.
+
+    res.json({
+      success: true,
+      batchId: batch.id,
+      assigned: orders.length,
+      driverName: driver.name,
+      area,
+      deliveryDate: date,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
 // ─── Mark a delivery run ──────────────────────────────────────
 // A "Lunch + Dinner" customer is one Order row but two physical deliveries, so
 // each run is stamped separately (lunch_delivered_at / dinner_delivered_at) and
@@ -2053,20 +2198,54 @@ router.post('/mark-round', async (req: AuthRequest, res) => {
         data: { delivery_status: 'Missed' },
       });
     } else {
-      // $executeRaw (tagged template), not $executeRawUnsafe: the ids are
-      // server-derived from a tenant-scoped query above, but the tagged form
-      // parameterises by construction and removes any chance of a future edit
-      // concatenating user input into this string.
-      await prisma.$executeRaw`
-        UPDATE "Order" SET "delivery_status" = CASE
-           WHEN (("meal_type" ILIKE '%lunch%') IS NOT TRUE OR "lunch_delivered_at" IS NOT NULL)
-            AND (("meal_type" ILIKE '%dinner%') IS NOT TRUE OR "dinner_delivered_at" IS NOT NULL)
-             THEN 'Delivered'
-           WHEN "lunch_delivered_at" IS NOT NULL OR "dinner_delivered_at" IS NOT NULL
-             THEN 'Out for Delivery'
-           ELSE 'Pending'
-         END
-         WHERE "id" = ANY(${ids}::text[])`;
+      // Shared with the driver app, so a drop marked on either screen derives
+      // the same status. See lib/deliveryStatus.ts.
+      await syncDeliveryStatus(ids);
+    }
+
+    // Keep the driver app's copy of these drops in step. Without this a stop
+    // marked done by the merchant still showed as pending on the driver's
+    // phone, and they would deliver it again.
+    const touched = await prisma.deliveryItem.findMany({
+      where: { order_id: { in: ids }, meal_type: meal },
+      select: { id: true, batch_id: true },
+    });
+
+    if (touched.length > 0) {
+      await prisma.deliveryItem.updateMany({
+        where: { id: { in: touched.map((i) => i.id) } },
+        data:
+          action === 'delivered'
+            ? { status: 'delivered', delivered_at: stamp }
+            : { status: action === 'missed' ? 'missed' : 'pending', delivered_at: null },
+      });
+
+      // And recompute the batches those drops belong to. The driver app keeps
+      // this counter itself when a driver delivers; marking from this side left
+      // it untouched, so a stop the merchant had completed still read "0 / 3
+      // delivered" on their own screen.
+      for (const batchId of [...new Set(touched.map((i) => i.batch_id))]) {
+        const batch = await prisma.deliveryBatch.findFirst({
+          where: { id: batchId, created_by: user.id },
+          select: { id: true, total_orders: true },
+        });
+        if (!batch) continue;
+        const delivered = await prisma.deliveryItem.count({
+          where: { batch_id: batch.id, status: 'delivered' },
+        });
+        await prisma.deliveryBatch.update({
+          where: { id: batch.id },
+          data: {
+            delivered_count: delivered,
+            status:
+              delivered === 0
+                ? 'pending'
+                : delivered >= (batch.total_orders || 0)
+                ? 'completed'
+                : 'in_progress',
+          },
+        });
+      }
     }
 
     res.json({ success: true, updated: ids.length, meal, action });

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, RequestHandler } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
@@ -89,8 +89,24 @@ router.post('/send-email', async (req: AuthRequest, res) => {
   }
 });
 
+// multer rejects by throwing, which Express turns into an HTML 500 — and the
+// client parses responses as JSON, so an oversized file surfaced as a generic
+// failure with no cause. Same wrapper as the driver photo route.
+const uploadFile: RequestHandler = (req, res, next) => {
+  upload.single('file')(req, res, (err: any) => {
+    if (!err) return next();
+    const tooBig = err?.code === 'LIMIT_FILE_SIZE';
+    console.error('[Upload] rejected:', err?.code || err?.message);
+    return res.status(400).json({
+      error: tooBig
+        ? 'That file is too large. Please use one under 10MB.'
+        : err?.message || 'That file could not be uploaded.',
+    });
+  });
+};
+
 // POST /api/integrations/upload
-router.post('/upload', upload.single('file'), async (req: AuthRequest, res) => {
+router.post('/upload', uploadFile, async (req: AuthRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 

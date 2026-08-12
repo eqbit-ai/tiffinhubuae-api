@@ -68,7 +68,15 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
     (user as any).impersonatedBy = decoded.impersonatedBy || null;
     req.user = user as any;
     next();
-  } catch {
+  } catch (e: any) {
+    // The database call is inside this try as well as jwt.verify, so a DB fault
+    // used to be reported to the client — and to the logs — as "Invalid token".
+    // A schema drift on User made every request look like an auth failure and
+    // sent debugging in entirely the wrong direction. The response stays
+    // deliberately vague; the log says which it actually was.
+    if (e?.name !== 'JsonWebTokenError' && e?.name !== 'TokenExpiredError') {
+      console.error('[auth] token verified but the lookup failed:', e?.name, e?.code, e?.meta || '');
+    }
     return res.status(401).json({ error: 'Invalid token' });
   }
 }

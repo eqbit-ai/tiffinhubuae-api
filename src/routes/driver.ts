@@ -1,9 +1,11 @@
-import { Router } from 'express';
+import { Router, RequestHandler } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { prisma } from '../lib/prisma';
 import { generateDriverToken, driverAuthMiddleware, DriverAuthRequest } from '../middleware/auth';
-import { uploadToCloudinary } from '../lib/cloudinary';
+import { uploadToCloudinary, isCloudinaryConfigured } from '../lib/cloudinary';
+import { stampRun, syncDeliveryStatus, runOf } from '../lib/deliveryStatus';
+import { todayInTimezone } from '../lib/weekend';
 
 const router = Router();
 
@@ -25,6 +27,26 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: imageFilter,
 });
+
+/**
+ * multer's own failures — file too large, wrong type — are thrown, not
+ * returned, so they fell through to Express's default handler and came back as
+ * an HTML 500. The driver app parses the response as JSON, so every one of
+ * these read as a generic "Request failed" with no hint that the photo was
+ * simply too big. Wrapped so the driver is told what actually happened.
+ */
+const uploadPhoto: RequestHandler = (req, res, next) => {
+  upload.single('photo')(req, res, (err: any) => {
+    if (!err) return next();
+    const tooBig = err?.code === 'LIMIT_FILE_SIZE';
+    console.error('[Driver Upload] rejected:', err?.code || err?.message);
+    return res.status(400).json({
+      error: tooBig
+        ? 'That photo is too large. Please retake it at a smaller size.'
+        : err?.message || 'That file could not be uploaded.',
+    });
+  });
+};
 
 // POST /api/driver/auth — validate access_code, return driver JWT + merchant info
 router.post('/auth', async (req, res) => {
@@ -69,7 +91,16 @@ router.post('/auth', async (req, res) => {
 router.get('/batches', driverAuthMiddleware, async (req: DriverAuthRequest, res) => {
   try {
     const driver = req.driver!;
-    const today = new Date().toISOString().split('T')[0];
+
+    // The merchant's calendar day, not the server's. Railway runs in UTC, so a
+    // Dubai round assigned at 01:00 local sits under the next date and a UTC
+    // "today" would not find it until 04:00 — the driver would open an empty
+    // app during the morning they are meant to be driving.
+    const merchant = await prisma.user.findUnique({
+      where: { id: driver.merchant_id },
+      select: { timezone: true },
+    });
+    const today = todayInTimezone(merchant?.timezone);
 
     const batches = await prisma.deliveryBatch.findMany({
       where: {
@@ -198,6 +229,33 @@ router.put('/items/:itemId/deliver', driverAuthMiddleware, async (req: DriverAut
       },
     });
 
+    // Push the delivery back onto the Order, which is what the merchant's
+    // Delivery Management screen reads. Until this existed the driver app was a
+    // dead end: a driver could deliver a whole round and the merchant's screen
+    // still showed every order pending.
+    //
+    // The run comes from the item, which assign-area stamps as exactly 'Lunch'
+    // or 'Dinner' — one physical trip — rather than the order's own
+    // "Lunch + Dinner". Older items predating that have no order_id and are
+    // skipped.
+    const run = runOf(item.meal_type);
+    if (item.order_id && run) {
+      // Scope to the merchant on the driver's token, so a tampered item can
+      // never reach another tenant's order.
+      const order = await prisma.order.findFirst({
+        where: { id: item.order_id, created_by: driver.merchant_id },
+        select: { id: true },
+      });
+      if (order) {
+        await stampRun([order.id], run, new Date());
+        await prisma.order.updateMany({
+          where: { id: order.id },
+          data: { delivered_by: batch.driver_name || undefined },
+        });
+        await syncDeliveryStatus([order.id]);
+      }
+    }
+
     res.json(updated);
   } catch (error) {
     console.error('[Driver Deliver] Error:', error);
@@ -206,10 +264,16 @@ router.put('/items/:itemId/deliver', driverAuthMiddleware, async (req: DriverAut
 });
 
 // POST /api/driver/upload-photo — upload to Cloudinary, returns URL
-router.post('/upload-photo', driverAuthMiddleware, upload.single('photo'), async (req: DriverAuthRequest, res) => {
+router.post('/upload-photo', driverAuthMiddleware, uploadPhoto, async (req: DriverAuthRequest, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No photo uploaded' });
+    }
+
+    // Same guard the merchant upload route has. Without it a missing
+    // Cloudinary config surfaced to the driver as a bare 500.
+    if (!isCloudinaryConfigured()) {
+      return res.status(503).json({ error: 'Photo uploads are not configured on this environment.' });
     }
 
     const photoUrl = await uploadToCloudinary(
