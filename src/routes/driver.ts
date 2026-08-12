@@ -92,23 +92,40 @@ router.get('/batches', driverAuthMiddleware, async (req: DriverAuthRequest, res)
   try {
     const driver = req.driver!;
 
-    // The merchant's calendar day, not the server's. Railway runs in UTC, so a
-    // Dubai round assigned at 01:00 local sits under the next date and a UTC
-    // "today" would not find it until 04:00 — the driver would open an empty
-    // app during the morning they are meant to be driving.
+    // A round is dated by the merchant's browser when they assign it, and read
+    // back here by the server — so "today" has to mean the same thing in two
+    // places that cannot see each other's clock.
+    //
+    // Matching a single date did not survive that. Most merchants never set
+    // `timezone`, so it defaults to UTC while the kitchen is in UAE: at 01:00 in
+    // Dubai the browser files the round under the 13th and the server, asked for
+    // "today" in UTC, looks for the 12th and returns nothing. The driver opens
+    // an empty app on a morning they are meant to be driving, and nothing in
+    // either screen explains why.
+    //
+    // So: a three-day window around the merchant's today. It is wide enough to
+    // absorb any real timezone offset in either direction, and narrow enough
+    // that a driver never sees a round from last week. Ordered by date so
+    // today's work leads.
     const merchant = await prisma.user.findUnique({
       where: { id: driver.merchant_id },
       select: { timezone: true },
     });
     const today = todayInTimezone(merchant?.timezone);
+    const shift = (days: number) => {
+      const d = new Date(`${today}T00:00:00.000Z`);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const window = [shift(-1), today, shift(1)];
 
     const batches = await prisma.deliveryBatch.findMany({
       where: {
         created_by: driver.merchant_id,
         driver_id: driver.id,
-        delivery_date: today,
+        delivery_date: { in: window },
       },
-      orderBy: { created_at: 'asc' },
+      orderBy: [{ delivery_date: 'asc' }, { created_at: 'asc' }],
     });
 
     res.json(batches);
