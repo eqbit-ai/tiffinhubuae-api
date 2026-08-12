@@ -19,8 +19,25 @@ const transporter = nodemailer.createTransport({
   socketTimeout: 15000,
 });
 
-export async function sendEmail(params: { to: string; subject: string; body: string }) {
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER || 'support@tiffinhub.me';
+export type SendEmailParams = {
+  to: string;
+  subject: string;
+  body: string;
+  /**
+   * Overrides the default sender. Marketing mail uses this to send from a
+   * separate verified subdomain, so a spam complaint on a campaign cannot take
+   * password resets and expiry alerts down with it — those share one reputation
+   * with whatever else leaves the same domain.
+   */
+  from?: string;
+  replyTo?: string;
+  /** List-Unsubscribe and friends. Ignored by the SMTP fallback's own headers. */
+  headers?: Record<string, string>;
+};
+
+export async function sendEmail(params: SendEmailParams) {
+  const from =
+    params.from || process.env.SMTP_FROM || process.env.SMTP_USER || 'support@tiffinhub.me';
 
   // Use Resend if configured
   if (resend) {
@@ -30,6 +47,8 @@ export async function sendEmail(params: { to: string; subject: string; body: str
         to: params.to,
         subject: params.subject,
         html: params.body,
+        ...(params.replyTo ? { replyTo: params.replyTo } : {}),
+        ...(params.headers ? { headers: params.headers } : {}),
       });
       if (error) {
         console.error('[Email/Resend] Failed:', params.subject, '-', error.message);
@@ -55,6 +74,8 @@ export async function sendEmail(params: { to: string; subject: string; body: str
       to: params.to,
       subject: params.subject,
       html: params.body,
+      ...(params.replyTo ? { replyTo: params.replyTo } : {}),
+      ...(params.headers ? { headers: params.headers } : {}),
     });
     console.log('[Email/SMTP] Sent:', params.subject, 'to', params.to);
     return { success: true, messageId: info.messageId };

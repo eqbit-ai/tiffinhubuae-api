@@ -22,11 +22,19 @@
  *   Merchant onboarding to collect money from THEIR customers. This is not how
  *   merchants pay us — that is ordinary Stripe Checkout and Billing, which is
  *   deliberately left alone.
+ *
+ * WINBACK_EMAILS
+ *   The two-step sequence to merchants who signed up, never subscribed, and
+ *   whose trial has ended. Unlike the others this one has never been on: it
+ *   ships off because the first run mails a backlog of accounts going back to
+ *   the beginning, and that is a decision to take deliberately rather than
+ *   discover in the Resend dashboard. Turning it on is this flag plus API_URL.
  */
 export const FEATURES = {
   WHATSAPP_NOTIFICATIONS: false,
   AUTO_PAYMENTS: false,
   STRIPE_CONNECT: false,
+  WINBACK_EMAILS: false,
 } as const;
 
 /** Sent to the client when a disabled feature is called anyway. */
