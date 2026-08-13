@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, superAdminOnly, AuthRequest } from '../middleware/auth';
+import { publishPost, postedToday, credentialsConfigured } from '../services/socialPublisher';
 
 const router = Router();
 
@@ -172,6 +173,41 @@ router.post('/posts', async (req: AuthRequest, res) => {
   }
 
   return res.json(results);
+});
+
+/**
+ * Send one approved post immediately.
+ *
+ * The scheduled run goes every fifteen minutes, which is fine once it is
+ * trusted and useless when you are testing — approving something and staring at
+ * an unchanged screen is how a working feature gets reported as broken. This
+ * takes the same code path as the scheduler, including the daily cap, so it is
+ * not a second untested way to publish.
+ *
+ * Only from `approved`. Publishing straight from `pending` would make the
+ * review step optional, which is the one thing this whole design exists to
+ * prevent.
+ */
+router.post('/posts/:id/publish-now', async (req: AuthRequest, res) => {
+  if (!credentialsConfigured()) {
+    return res.status(503).json({ error: 'Meta credentials are not configured on the server.' });
+  }
+
+  const post = await prisma.socialPost.findUnique({ where: { id: String(req.params.id) } });
+  if (!post) return res.status(404).json({ error: 'No such post' });
+  if (post.status !== 'approved') {
+    return res.status(409).json({ error: `Only an approved post can be published — this one is ${post.status}.` });
+  }
+
+  const today = await postedToday();
+  if (today >= DAILY_CAP) {
+    return res.status(429).json({ error: `Daily cap of ${DAILY_CAP} already reached.` });
+  }
+
+  const result = await publishPost(post);
+  if (!result.ok) return res.status(502).json({ error: result.reason });
+
+  return res.json(await prisma.socialPost.findUnique({ where: { id: post.id } }));
 });
 
 export default router;

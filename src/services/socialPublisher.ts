@@ -67,19 +67,73 @@ async function toFacebook(mediaUrl: string, caption: string, isVideo: boolean) {
   return `https://www.facebook.com/${result.post_id || result.id}`;
 }
 
+/**
+ * How many go out in a single run.
+ *
+ * The daily cap alone is not pacing. With a cap of 20 and an empty day, one run
+ * would take all 20 approved posts and fire them back to back — which is
+ * exactly the burst the hourly schedule was meant to avoid. Two per run, every
+ * fifteen minutes, spreads a full day's worth across the waking hours and still
+ * gets the first post out within a quarter of an hour of approving it.
+ */
+const PER_RUN = Number(process.env.SOCIAL_PER_RUN || 2);
+
+/**
+ * Sends one approved post. Shared by the scheduled run and the "Publish now"
+ * button, so both take exactly the same path — a manual publish that skipped
+ * the cap or the status guards would be a second, untested way to post.
+ */
+export async function publishPost(post: {
+  id: string; slug: string; media_url: string; caption: string; is_video: boolean; targets: string;
+}) {
+  const targets = post.targets.split(',').map((t) => t.trim()).filter(Boolean);
+  const links: { instagram_url?: string; facebook_url?: string } = {};
+
+  try {
+    for (const target of targets) {
+      if (target === 'instagram') {
+        links.instagram_url = await toInstagram(post.media_url, post.caption, post.is_video);
+      } else if (target === 'facebook') {
+        links.facebook_url = await toFacebook(post.media_url, post.caption, post.is_video);
+      }
+      await sleep(1000);
+    }
+    await prisma.socialPost.update({
+      where: { id: post.id },
+      data: { status: 'posted', posted_at: new Date(), error: null, ...links },
+    });
+    return { ok: true as const, links };
+  } catch (err: any) {
+    // Marked failed rather than left approved, so the next run does not retry it
+    // forever. Whatever did go out is recorded, so a partial send is visible in
+    // the panel instead of being silently repeated.
+    await prisma.socialPost.update({
+      where: { id: post.id },
+      data: { status: 'failed', error: String(err.message).slice(0, 500), ...links },
+    });
+    console.error(`[Social] ${post.slug} failed: ${err.message}`);
+    return { ok: false as const, reason: String(err.message) };
+  }
+}
+
+/** Posts already sent today, for the cap. Counted from rows, never a counter. */
+export async function postedToday() {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  return prisma.socialPost.count({ where: { status: 'posted', posted_at: { gte: startOfDay } } });
+}
+
+export function credentialsConfigured() {
+  return !!(process.env.META_ACCESS_TOKEN && process.env.IG_USER_ID && process.env.FB_PAGE_ID);
+}
+
 export async function runSocialQueue() {
-  if (!process.env.META_ACCESS_TOKEN || !process.env.IG_USER_ID || !process.env.FB_PAGE_ID) {
+  if (!credentialsConfigured()) {
     return { skipped: 'Meta credentials are not configured' };
   }
 
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const postedToday = await prisma.socialPost.count({
-    where: { status: 'posted', posted_at: { gte: startOfDay } },
-  });
-
-  const budget = DAILY_CAP - postedToday;
+  const alreadyToday = await postedToday();
+  const budget = Math.min(PER_RUN, DAILY_CAP - alreadyToday);
   if (budget <= 0) return { posted: 0, reason: `daily cap of ${DAILY_CAP} already reached` };
 
   const due = await prisma.socialPost.findMany({
@@ -93,39 +147,16 @@ export async function runSocialQueue() {
 
   let posted = 0;
   let failed = 0;
-
   for (const post of due) {
-    const targets = post.targets.split(',').map((t) => t.trim()).filter(Boolean);
-    const links: { instagram_url?: string; facebook_url?: string } = {};
-
-    try {
-      for (const target of targets) {
-        if (target === 'instagram') {
-          links.instagram_url = await toInstagram(post.media_url, post.caption, post.is_video);
-        } else if (target === 'facebook') {
-          links.facebook_url = await toFacebook(post.media_url, post.caption, post.is_video);
-        }
-        // Meta rate-limits at roughly two calls a second; this is well under.
-        await sleep(1000);
-      }
-
-      await prisma.socialPost.update({
-        where: { id: post.id },
-        data: { status: 'posted', posted_at: new Date(), error: null, ...links },
-      });
-      posted++;
-    } catch (err: any) {
-      // Marked failed rather than left approved, so the next run does not retry
-      // it forever. Whatever did go out is recorded, so a partial send is
-      // visible in the panel instead of being silently repeated.
-      await prisma.socialPost.update({
-        where: { id: post.id },
-        data: { status: 'failed', error: String(err.message).slice(0, 500), ...links },
-      });
-      failed++;
-      console.error(`[Social] ${post.slug} failed: ${err.message}`);
-    }
+    const result = await publishPost(post);
+    if (result.ok) posted++; else failed++;
   }
 
-  return { posted, failed, cap: DAILY_CAP, remaining_today: Math.max(0, budget - posted) };
+  return {
+    posted,
+    failed,
+    per_run: PER_RUN,
+    cap: DAILY_CAP,
+    remaining_today: Math.max(0, DAILY_CAP - alreadyToday - posted),
+  };
 }

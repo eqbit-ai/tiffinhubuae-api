@@ -53,10 +53,12 @@ export const DAILY_JOBS: ScheduledJob[] = [
 ];
 
 /**
- * Every hour. The social queue is paced rather than dumped: twenty posts sent in
- * one burst at 05:00 is the shape of an automated account, and spreading them
- * across the waking day is both better for reach and cheaper to stop if the
- * first few go wrong.
+ * Every fifteen minutes, sending at most SOCIAL_PER_RUN (2) each time.
+ *
+ * The queue is paced rather than dumped: twenty posts in one burst is the shape
+ * of an automated account. But the cap alone does not pace anything — one run
+ * would happily take all twenty — so the limit that matters is per-run, and the
+ * frequency is what makes approving a post feel like it did something.
  */
 export const HOURLY_JOBS: ScheduledJob[] = [
   { name: 'social-queue', run: runSocialQueue },
@@ -133,7 +135,10 @@ export function startCronJobs() {
 
   cron.schedule('0 5 * * *', () => { void runSchedule('daily'); });
   cron.schedule('0 22 * * *', () => { void runSchedule('nightly'); });
-  cron.schedule('0 * * * *', () => { void runSchedule('hourly'); });
+  // Every fifteen minutes, not hourly: approving a post and waiting up to an
+  // hour for anything to happen is indistinguishable from the feature being
+  // broken. Two posts per run keeps the pacing.
+  cron.schedule('*/15 * * * *', () => { void runSchedule('hourly'); });
 
   console.log('Cron jobs started (in-process)');
 }
