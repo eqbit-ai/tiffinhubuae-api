@@ -39,16 +39,23 @@ async function toInstagram(mediaUrl: string, caption: string, isVideo: boolean) 
     access_token: token,
   });
 
-  // Video containers are transcoded before they can be published, and
-  // publishing one still marked IN_PROGRESS fails with a message that does not
-  // mention timing at all.
-  if (isVideo) {
-    for (let i = 0; i < 30; i++) {
-      await sleep(4000);
-      const { status_code } = await graph(`/${container.id}`, { fields: 'status_code', access_token: token }, 'GET');
-      if (status_code === 'FINISHED') break;
-      if (status_code === 'ERROR') throw new Error('Instagram could not process the video');
-      if (i === 29) throw new Error('Instagram still processing after two minutes');
+  // Wait for the container to be ready — for images as well as video.
+  //
+  // Publishing an image container immediately fails with "Graph 9007: Media ID
+  // is not available", which reads like a bad id and is really a timing
+  // problem: Instagram has to fetch the image from its URL before the container
+  // can be published. Video is slower because it also transcodes, but neither is
+  // instant, and only polling for video is what made the first real publish
+  // fail.
+  const tries = isVideo ? 30 : 12;
+  const gap = isVideo ? 4000 : 2000;
+  for (let i = 0; i < tries; i++) {
+    await sleep(gap);
+    const { status_code } = await graph(`/${container.id}`, { fields: 'status_code', access_token: token }, 'GET');
+    if (status_code === 'FINISHED') break;
+    if (status_code === 'ERROR') throw new Error(`Instagram could not process the ${isVideo ? 'video' : 'image'}`);
+    if (i === tries - 1) {
+      throw new Error(`Instagram still processing after ${Math.round((tries * gap) / 1000)}s`);
     }
   }
 
