@@ -5,6 +5,7 @@ import { deleteFromCloudinary, extractPublicId } from './lib/cloudinary';
 import { stripe } from './services/stripe';
 import { FEATURES } from './lib/features';
 import { sendEmail } from './services/email';
+import { runWinbackEmails } from './services/winbackSender';
 
 /**
  * A scheduled unit of work, defined once and triggered two ways.
@@ -39,6 +40,15 @@ export const DAILY_JOBS: ScheduledJob[] = [
   { name: 'customer-days-maintenance', run: runCustomerDaysMaintenance },
   { name: 'inventory-deduction', run: () => runInventoryDeduction() },
   { name: 'auto-resume-paused-customers', run: runAutoResumePausedCustomers },
+  {
+    name: 'winback-emails',
+    // Off until the first batch is a deliberate decision. Turning it on is this
+    // flag plus MARKETING_FROM and API_URL — the sender refuses to run without
+    // either, rather than falling back to the transactional sender or mailing a
+    // dead unsubscribe link.
+    skip: () => (FEATURES.WINBACK_EMAILS ? null : 'WINBACK_EMAILS is off'),
+    run: runWinbackEmails,
+  },
 ];
 
 export const NIGHTLY_JOBS: ScheduledJob[] = [

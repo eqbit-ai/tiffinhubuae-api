@@ -28,7 +28,15 @@
  *   whose trial has ended. Unlike the others this one has never been on: it
  *   ships off because the first run mails a backlog of accounts going back to
  *   the beginning, and that is a decision to take deliberately rather than
- *   discover in the Resend dashboard. Turning it on is this flag plus API_URL.
+ *   discover in the Resend dashboard.
+ *
+ *   Turning it on is this flag plus MARKETING_FROM and API_URL. The sender
+ *   refuses to run without either rather than improvising: no MARKETING_FROM
+ *   would put bulk mail on the same address as password resets, and no API_URL
+ *   would ship a dead unsubscribe link, which is what turns an unsubscribe into
+ *   a spam complaint. The cap is MAX_PER_RUN (25) per day, so the backlog goes
+ *   out over several runs and a wrong assumption shows up as two bounces
+ *   instead of twenty.
  */
 export const FEATURES = {
   WHATSAPP_NOTIFICATIONS: false,

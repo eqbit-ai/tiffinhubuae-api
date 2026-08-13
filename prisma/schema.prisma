@@ -92,6 +92,24 @@ model User {
   winback_followup_sent_at       DateTime?
   marketing_opt_out              Boolean?  @default(false)
 
+  // Terms acceptance, recorded server-side at account creation.
+  //
+  // The notice on the signup form is what puts it in front of the merchant; this
+  // is the evidence it happened. A checkbox in the browser proves nothing later
+  // — it leaves no record — and Google Sign-In has nowhere to put one anyway,
+  // since sign-up and sign-in are a single call with no intermediate form.
+  //
+  // The version is the point of storing anything at all. "They agreed" is not a
+  // useful answer on its own; "they agreed to the terms as they read on this
+  // date" is. Bump TERMS_VERSION when the terms change materially and old rows
+  // stay honest about which text they accepted.
+  //
+  // Null means the account predates this — which is every existing merchant, and
+  // is not backfilled. Writing today's date against a signup from March would be
+  // inventing a record of something that never happened.
+  terms_accepted_at              DateTime?
+  terms_version                  String?
+
   created_at                     DateTime  @default(now())
   updated_at                     DateTime  @updatedAt
 

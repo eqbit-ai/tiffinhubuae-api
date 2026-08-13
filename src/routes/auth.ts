@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
+import { termsAcceptance } from '../lib/terms';
 import { generateToken, authMiddleware, superAdminOnly, AuthRequest, blockIfImpersonating } from '../middleware/auth';
 import { sendEmail } from '../services/email';
 import { OAuth2Client } from 'google-auth-library';
@@ -57,6 +58,10 @@ router.post('/register', async (req, res) => {
           subscription_source: null,
           trial_ends_at: null,
           subscription_ends_at: null,
+          // Re-signup goes through the same form and the same notice, so it is a
+          // fresh acceptance — and it overwrites the old stamp deliberately, as
+          // the terms may have changed since the first time round.
+          ...termsAcceptance(),
         },
       });
       const token = generateToken(user.id);
@@ -81,6 +86,8 @@ router.post('/register', async (req, res) => {
         plan_type: 'trial',
         subscription_source: 'trial',
         trial_ends_at: trialEndsAt,
+        // The signup form carries the notice above the submit button.
+        ...termsAcceptance(),
         ...(country ? { country } : {}),
         ...(timezone ? { timezone } : {}),
         ...(currency ? { currency } : {}),
@@ -255,6 +262,10 @@ router.post('/google', async (req, res) => {
           plan_type: 'trial',
           subscription_source: 'trial',
           trial_ends_at: trialEndsAt,
+          // Stamped here and not on the sign-in branch: only a brand new account
+          // is agreeing to anything. An existing merchant signing back in keeps
+          // the version they originally accepted.
+          ...termsAcceptance(),
           ...(country ? { country } : {}),
           ...(timezone ? { timezone } : {}),
           ...(currency ? { currency } : {}),

@@ -13,6 +13,7 @@ import driverRoutes from './routes/driver';
 import notificationRoutes from './routes/notifications';
 import { startCronJobs } from './cron';
 import cronRoutes from './routes/cron';
+import emailRoutes from './routes/email';
 import { prisma } from './lib/prisma';
 import { authMiddleware } from './middleware/auth';
 
@@ -154,6 +155,9 @@ app.use('/api/notifications', notificationRoutes);
 // Mounted before the /api wildcard, and outside the authenticated routes: this
 // is triggered by GitHub Actions, not a user. Its guard is CRON_SECRET.
 app.use('/api/cron', cronRoutes);
+// Also unauthenticated, also before the wildcard. The person unsubscribing is
+// not logged in and must not have to be. Its guard is the HMAC in the link.
+app.use('/api/email', emailRoutes);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entityRoutes);
 
