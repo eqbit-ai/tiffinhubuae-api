@@ -14,6 +14,7 @@ import notificationRoutes from './routes/notifications';
 import { startCronJobs } from './cron';
 import cronRoutes from './routes/cron';
 import emailRoutes from './routes/email';
+import socialRoutes from './routes/social';
 import { prisma } from './lib/prisma';
 import { authMiddleware } from './middleware/auth';
 
@@ -158,6 +159,7 @@ app.use('/api/cron', cronRoutes);
 // Also unauthenticated, also before the wildcard. The person unsubscribing is
 // not logged in and must not have to be. Its guard is the HMAC in the link.
 app.use('/api/email', emailRoutes);
+app.use('/api/social', socialRoutes);
 // Entity routes last (wildcard /:entity)
 app.use('/api', entityRoutes);
 

@@ -6,6 +6,7 @@ import { stripe } from './services/stripe';
 import { FEATURES } from './lib/features';
 import { sendEmail } from './services/email';
 import { runWinbackEmails } from './services/winbackSender';
+import { runSocialQueue } from './services/socialPublisher';
 
 /**
  * A scheduled unit of work, defined once and triggered two ways.
@@ -51,6 +52,16 @@ export const DAILY_JOBS: ScheduledJob[] = [
   },
 ];
 
+/**
+ * Every hour. The social queue is paced rather than dumped: twenty posts sent in
+ * one burst at 05:00 is the shape of an automated account, and spreading them
+ * across the waking day is both better for reach and cheaper to stop if the
+ * first few go wrong.
+ */
+export const HOURLY_JOBS: ScheduledJob[] = [
+  { name: 'social-queue', run: runSocialQueue },
+];
+
 export const NIGHTLY_JOBS: ScheduledJob[] = [
   { name: 'delivery-photo-cleanup', run: runDeliveryPhotoCleanup },
 ];
@@ -60,6 +71,8 @@ export const SCHEDULES = {
   daily: DAILY_JOBS,
   /** 22:00 UTC */
   nightly: NIGHTLY_JOBS,
+  /** Top of every hour */
+  hourly: HOURLY_JOBS,
 } as const;
 
 export type ScheduleName = keyof typeof SCHEDULES;
@@ -120,6 +133,7 @@ export function startCronJobs() {
 
   cron.schedule('0 5 * * *', () => { void runSchedule('daily'); });
   cron.schedule('0 22 * * *', () => { void runSchedule('nightly'); });
+  cron.schedule('0 * * * *', () => { void runSchedule('hourly'); });
 
   console.log('Cron jobs started (in-process)');
 }

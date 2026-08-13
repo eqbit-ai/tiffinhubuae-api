@@ -831,3 +831,49 @@ model TiffinAttribute {
   @@unique([created_by, legacy_field])
   @@index([created_by])
 }
+
+// A social post waiting to be reviewed, or already sent.
+//
+// Rendering happens on a laptop — headless Chrome and ffmpeg are not things to
+// put in an API container — so this table never holds an image. It holds the
+// Cloudinary URL of an image that already exists, which is also exactly what
+// Meta's publishing API wants: it fetches a URL, it cannot accept an upload.
+//
+// Nothing here is published without passing through `approved`. The status is
+// the whole safety mechanism: a generator can write rows all day and none of
+// them reach an audience until a person looked at the picture and the words and
+// pressed a button.
+model SocialPost {
+  id   String @id @default(cuid())
+  /// Stable id from the generator, so a re-run updates rather than duplicates.
+  slug String @unique
+
+  layout    String
+  caption   String
+  /// Cloudinary URL. Video posts set media_url to the mp4 and is_video true.
+  media_url String
+  is_video  Boolean @default(false)
+  /// instagram, facebook, or both, comma separated.
+  targets   String  @default("instagram,facebook")
+
+  // pending → approved → posted, or pending → skipped. failed is terminal until
+  // someone re-approves it; a failed post is never retried automatically,
+  // because the most common cause is a caption Meta rejected and a silent retry
+  // loop would just hammer the API with the same rejection.
+  status String @default("pending")
+
+  /// Earliest it may go out. The publisher never sends before this.
+  scheduled_for DateTime?
+
+  reviewed_by   String?
+  reviewed_at   DateTime?
+  posted_at     DateTime?
+  instagram_url String?
+  facebook_url  String?
+  error         String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([status, scheduled_for])
+}
