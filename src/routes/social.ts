@@ -46,6 +46,52 @@ router.get('/posts', async (req: AuthRequest, res) => {
   return res.json(posts);
 });
 
+/**
+ * The claim pool the generator builds posts from.
+ *
+ * Deliberately returns the same shape as the old content/atoms.json — claims,
+ * openers, closers, tag_sets — so the browser generator swaps its bundled
+ * import for this call without any change to how it recombines them. The point
+ * of moving these into the database was to stop maintaining two copies of the
+ * file, not to change what a post looks like.
+ *
+ * Inactive claims are withheld: retiring one should stop it generating new
+ * posts without disturbing posts already published from it.
+ */
+router.get('/atoms', async (_req: AuthRequest, res) => {
+  const [claims, atoms] = await Promise.all([
+    prisma.socialClaim.findMany({
+      where: { is_active: true },
+      orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
+    }),
+    prisma.socialAtom.findMany({
+      where: { is_active: true },
+      orderBy: [{ kind: 'asc' }, { sort_order: 'asc' }],
+    }),
+  ]);
+
+  const pool = (kind: string) => atoms.filter((a) => a.kind === kind).map((a) => a.text);
+
+  return res.json({
+    claims: claims.map((c) => ({
+      id: c.claim_id,
+      layout: c.layout,
+      headlines: c.headlines,
+      body: c.body,
+      // Omit the empty ones rather than sending nulls — the generator spreads
+      // these onto the post and a null `cta` renders as an empty button.
+      ...(c.eyebrow ? { eyebrow: c.eyebrow } : {}),
+      ...(c.sub ? { sub: c.sub } : {}),
+      ...(c.value ? { value: c.value } : {}),
+      ...(c.items ? { items: c.items } : {}),
+      ...(c.cta ? { cta: c.cta } : {}),
+    })),
+    openers: pool('opener'),
+    closers: pool('closer'),
+    tag_sets: pool('tag_set'),
+  });
+});
+
 /** Counts per status, for the tab badges. */
 router.get('/stats', async (_req: AuthRequest, res) => {
   const grouped = await prisma.socialPost.groupBy({ by: ['status'], _count: true });

@@ -69,12 +69,12 @@ model User {
   // `onboarding_completed_at` is the only gate — null means show onboarding.
   // Existing merchants are backfilled with their created_at so they never see
   // it (prisma/scripts/backfill-onboarding.ts).
-  onboarding_completed_at        DateTime?
+  onboarding_completed_at DateTime?
   // { step, business, meals, skipped[] } — enough to resume mid-flow. The
   // dashboard checklist is NOT stored here: "has a customer" is derived by
   // counting customers, because a stored flag drifts from reality and a derived
   // one cannot lie.
-  onboarding_state               Json?
+  onboarding_state        Json?
 
   // Win-back. Two nullable stamps rather than a status column: the only question
   // either job asks is "has this one already gone out", and a null answers it
@@ -88,9 +88,9 @@ model User {
   // sending domain blacklisted. Password resets and expiry alerts ignore it:
   // those are transactional and a merchant cannot opt out of the product
   // talking to them about their own account.
-  winback_sent_at                DateTime?
-  winback_followup_sent_at       DateTime?
-  marketing_opt_out              Boolean?  @default(false)
+  winback_sent_at          DateTime?
+  winback_followup_sent_at DateTime?
+  marketing_opt_out        Boolean?  @default(false)
 
   // Terms acceptance, recorded server-side at account creation.
   //
@@ -107,11 +107,11 @@ model User {
   // Null means the account predates this — which is every existing merchant, and
   // is not backfilled. Writing today's date against a signup from March would be
   // inventing a record of something that never happened.
-  terms_accepted_at              DateTime?
-  terms_version                  String?
+  terms_accepted_at DateTime?
+  terms_version     String?
 
-  created_at                     DateTime  @default(now())
-  updated_at                     DateTime  @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   customers        Customer[]
   orders           Order[]
@@ -125,6 +125,7 @@ model User {
   activityLogs     ActivityLog[]
   tiffinAttributes TiffinAttribute[]
   paymentLinks     PaymentLink[]
+
   @@index([google_id])
 }
 
@@ -451,18 +452,18 @@ model SupportTicket {
 /// requests; the super admin reads across tenants with { all: true } and is the
 /// only one who can move `status` or write `admin_notes`.
 model FeatureRequest {
-  id            String    @id @default(cuid())
+  id            String   @id @default(cuid())
   user_email    String
   user_name     String?
   business_name String?
   title         String
   description   String?
-  category      String?   @default("general")
+  category      String?  @default("general")
   // submitted | planned | in_progress | shipped | declined
-  status        String    @default("submitted")
+  status        String   @default("submitted")
   admin_notes   String?
-  created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
 
   @@index([user_email])
   @@index([status])
@@ -876,4 +877,78 @@ model SocialPost {
   updated_at DateTime @updatedAt
 
   @@index([status, scheduled_for])
+}
+
+/// One claim: a single idea about the product, with several wordings of it.
+///
+/// This is the vocabulary the post generator is allowed to draw on, and it used
+/// to live in `content/atoms.json` in the tiffinhub-social repo — with a second
+/// copy bundled into the frontend, which drifted. Moving it here makes one
+/// source of truth and lets a claim be added without a deploy.
+///
+/// The safety property that matters is unchanged: nothing generates a sentence.
+/// Every string here was written or approved by a person, and the generator only
+/// ever recombines them. A claim describing a switched-off feature is the
+/// failure this whole design exists to prevent, so `is_active` exists to retire
+/// one without deleting the history of it having been used.
+model SocialClaim {
+  id String @id @default(cuid())
+
+  /// Stable short id used to build post slugs — `count` yields `count-01`.
+  /// Renaming this renames every post built from it, which strands anything
+  /// already scheduled against the old name.
+  claim_id String @unique
+
+  /// statement | stat | steps | offer — decides which layout renders it.
+  layout String
+
+  /// Wordings of the same idea. One post per headline, so this is the number
+  /// that decides how far the pool stretches. String[] as JSON.
+  headlines Json
+
+  /// The caption paragraph. Always a whole approved sentence, never a fragment.
+  body String
+
+  eyebrow String?
+  sub     String?
+  /// `stat` layout only — the figure, e.g. "$10".
+  value   String?
+  /// `steps` layout only — the lines. String[] as JSON.
+  items   Json?
+  /// `offer` layout only.
+  cta     String?
+
+  /// Retired rather than deleted, so posts already published keep their lineage.
+  is_active  Boolean @default(true)
+  sort_order Int     @default(0)
+
+  /// Who promoted it, and whether a model drafted it before a person approved it.
+  created_by String?
+  drafted_by String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([is_active, sort_order])
+}
+
+/// The interchangeable caption parts: openers, closers and hashtag sets.
+///
+/// Separate from SocialClaim because they are pooled — any opener can precede
+/// any claim body — and because they are short enough that a single table with
+/// a `kind` discriminator beats three near-identical ones.
+model SocialAtom {
+  id String @id @default(cuid())
+
+  /// opener | closer | tag_set
+  kind String
+  text String
+
+  is_active  Boolean @default(true)
+  sort_order Int     @default(0)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([kind, is_active])
 }
