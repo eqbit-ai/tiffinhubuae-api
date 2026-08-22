@@ -814,6 +814,13 @@ model TiffinAttribute {
   // At most one attribute per merchant is the axis the kitchen board splits on.
   is_segment_axis Boolean @default(false)
 
+  // Whether a customer may hold different values per meal. 'customer' is the
+  // default so no existing merchant's form changes: only an attribute the
+  // merchant marks 'per_meal' offers the expanded editor. A value stored for a
+  // per_meal attribute is { default, by_meal: { lunch, dinner, breakfast } };
+  // a bare scalar still means "the same at every meal".
+  scope String @default("customer") // 'customer' | 'per_meal'
+
   show_on_form      Boolean @default(true)
   show_on_portal    Boolean @default(true)
   show_on_label     Boolean @default(true)
