@@ -612,14 +612,53 @@ router.delete('/:entity/:id', authMiddleware, checkActiveSubscription, async (re
   const config = entityConfig[req.params.entity as string];
   if (!config) return res.status(404).json({ error: 'Unknown entity' });
 
-  // Customers reference attributes by id in attribute_values. Deleting one
-  // would leave orphaned keys on every customer row that used it — for the
-  // largest merchant that is 446 rows, mid-service, with no way to tell what the
-  // value meant. Deactivating hides it everywhere and keeps the data readable.
+  // Customers reference attributes by id in attribute_values, so deleting one
+  // used to be refused outright: it would leave orphaned keys on every row that
+  // used it, and for the largest merchant that is 446 rows. That objection is
+  // answered by removing the key at the same time, in one transaction, so no row
+  // is ever left holding an id that resolves to nothing.
+  //
+  // Deactivating is still right for a component the merchant has stopped
+  // serving - it keeps the history readable. Deleting is for the one they added
+  // by mistake.
   if (req.params.entity === 'tiffin_attributes') {
-    return res.status(405).json({
-      error: 'Tiffin attributes cannot be deleted. Set is_active to false to retire one — customer records reference it by id.',
-    });
+    try {
+      const attribute = await prisma.tiffinAttribute.findUnique({ where: { id: req.params.id as string } });
+      if (!attribute) return res.status(404).json({ error: 'Not found' });
+      if (!isSuperAdmin(req.user) && attribute.created_by !== req.user!.id) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      // Roti, Rice and Diet still back the legacy columns during the transition
+      // and carry a unique constraint on (created_by, legacy_field). Removing
+      // one would strand the column it stands for.
+      if (attribute.legacy_field) {
+        return res.status(405).json({
+          error: `${attribute.name} is a built-in component and cannot be deleted. Turn it off instead.`,
+        });
+      }
+
+      const rows = await prisma.$queryRaw<{ count: bigint }[]>`
+        SELECT COUNT(*)::bigint AS count FROM "Customer"
+        WHERE created_by = ${attribute.created_by}
+          AND attribute_values ? ${attribute.id}
+      `;
+      const affected = Number(rows[0]?.count ?? 0);
+
+      await prisma.$transaction([
+        prisma.$executeRaw`
+          UPDATE "Customer"
+             SET attribute_values = attribute_values - ${attribute.id}
+           WHERE created_by = ${attribute.created_by}
+             AND attribute_values ? ${attribute.id}
+        `,
+        prisma.tiffinAttribute.delete({ where: { id: attribute.id } }),
+      ]);
+
+      return res.json({ success: true, customers_cleaned: affected });
+    } catch (error: any) {
+      return res.status(500).json({ error: safeError(error) });
+    }
   }
 
   try {
