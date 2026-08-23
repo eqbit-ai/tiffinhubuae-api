@@ -8,7 +8,7 @@ import { sendMerchantWhatsApp } from '../services/whatsapp';
 import { stripe, STRIPE_PREMIUM_PRICE_ID } from '../services/stripe';
 import { sendPushToUser, sendPushToUserByEmail } from '../services/pushNotification';
 import { uploadToCloudinary } from '../lib/cloudinary';
-import { addDays, format } from 'date-fns';
+import { addDays, differenceInCalendarDays, format } from 'date-fns';
 import { isWeekendDate, todayInTimezone } from '../lib/weekend';
 import { syncDeliveryStatus } from '../lib/deliveryStatus';
 import { calculatePlatformFee, DEFAULT_FEE_PERCENTAGE } from '../lib/fees';
@@ -1832,14 +1832,52 @@ export async function runTrialExpiryCheck() {
       trial_converted: { not: true },
       active: true,
       trial_end_date: { lt: today },
-      phone_number: { not: null },
+      // Deleted customers were never excluded, so this job would WhatsApp
+      // someone the merchant had already removed.
+      is_deleted: false,
     },
   });
 
+  let expiredCount = 0;
   let sentCount = 0;
   for (const customer of expiringTrials) {
-    if (!customer.phone_number) continue;
+    // Expiry happens first and unconditionally.
+    //
+    // It used to sit at the end of the notify block, behind a
+    // `phone_number: { not: null }` filter on the query, a `continue` when the
+    // merchant's own subscription had lapsed, and a WhatsApp send. So a trial
+    // with no phone number, or belonging to a lapsed merchant, was never
+    // deactivated and ran forever - free tiffins with nothing in the app to say
+    // so. Telling someone their trial ended is best-effort; ending it is not.
     try {
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          active: false,
+          status: 'inactive',
+          inactive_reason: 'trial_expired',
+          payment_status: 'Pending',
+        },
+      });
+      expiredCount++;
+    } catch (err) {
+      console.error(`[TrialExpiry] Could not expire customer ${customer.id}:`, err);
+      continue;
+    }
+
+    // How long this customer's trial actually ran, for the messages below. The
+    // merchant email and dashboard notification both said "3-day trial" as a
+    // fact; it is whatever the dates say.
+    const trialDays =
+      customer.start_date && customer.trial_end_date
+        ? Math.max(0, differenceInCalendarDays(customer.trial_end_date, customer.start_date))
+        : null;
+    const trialLabel = trialDays && trialDays > 0 ? `${trialDays}-day` : 'free';
+
+    try {
+      // Everything from here is notification, and none of it may block expiry.
+      if (!customer.phone_number) continue;
+
       // Find the user who owns this customer for Stripe checkout
       const user = await prisma.user.findUnique({ where: { id: customer.created_by } });
       if (!user) continue;
@@ -1886,17 +1924,6 @@ export async function runTrialExpiryCheck() {
         message: `Hello ${customer.full_name},\n\nYour free trial has ended! We hope you enjoyed our tiffin service.\n\nTo continue without interruption, please subscribe.\n\nAmount: ${trialCurrency} ${customer.payment_amount}/month${paymentLink}\n\nThank you!`,
       });
 
-      // Deactivate the trial customer
-      await prisma.customer.update({
-        where: { id: customer.id },
-        data: {
-          active: false,
-          status: 'inactive',
-          inactive_reason: 'trial_expired',
-          payment_status: 'Pending',
-        },
-      });
-
       // Email the merchant about this trial expiry
       if (user.email) {
         const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -1910,7 +1937,7 @@ export async function runTrialExpiryCheck() {
               </div>
               <div style="background: #ffffff; padding: 24px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
                 <p style="font-size: 15px; color: #334155;">
-                  <strong>${customer.full_name}</strong>'s 3-day free trial has ended and they have been deactivated.
+                  <strong>${customer.full_name}</strong>'s ${trialLabel} trial has ended and they have been deactivated.
                 </p>
                 <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px; margin: 16px 0;">
                   <p style="margin: 0 0 8px; font-size: 14px; color: #92400e;"><strong>Customer Details:</strong></p>
@@ -1937,7 +1964,7 @@ export async function runTrialExpiryCheck() {
         data: {
           user_email: user.email,
           title: 'Trial Ended',
-          message: `${customer.full_name}'s 3-day trial has ended. Follow up to convert to paid subscription.`,
+          message: `${customer.full_name}'s ${trialLabel} trial has ended. Follow up to convert to paid subscription.`,
           type: 'trial_expiry',
           notification_type: 'info',
           customer_id: customer.id,
@@ -1958,7 +1985,7 @@ export async function runTrialExpiryCheck() {
     }
   }
 
-  return { success: true, trialReminders: sentCount };
+  return { success: true, expired: expiredCount, trialReminders: sentCount };
 }
 
 // ─── Generate Portal Link ─────────────────────────────────────
