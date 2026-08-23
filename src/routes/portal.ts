@@ -1154,7 +1154,8 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
         status: 'pending_verification',
         active: false,
         is_trial: isTrial,
-        trial_end_date: isTrial ? addDays(new Date(), 3) : null,
+        // The merchant's own trial length, snapshotted onto this customer.
+        trial_end_date: isTrial ? addDays(new Date(), merchant.customer_trial_days ?? 3) : null,
         payment_status: isTrial ? 'Trial' : 'Pending',
         registration_source: 'self_registration',
         created_by: merchant.id,

@@ -316,6 +316,8 @@ router.put('/me', authMiddleware, async (req: AuthRequest, res) => {
       'full_name', 'phone', 'business_name', 'logo_url',
       'whatsapp_notifications_enabled', 'whatsapp_number',
       'currency', 'timezone', 'country',
+      // The free trial this merchant offers their customers.
+      'customer_trial_days', 'customer_trial_price',
       'brand_primary_color', 'brand_accent_color', 'custom_domain',
       // Onboarding progress, so a half-finished setup survives closing the tab.
       'onboarding_state',
@@ -323,6 +325,28 @@ router.put('/me', authMiddleware, async (req: AuthRequest, res) => {
     const data: any = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) data[field] = req.body[field];
+    }
+
+    // The form sends these as strings. A trial of 0 days is not a trial, and a
+    // negative one produces an end date before the start - the shape that left
+    // three customers unclassifiable on the trials page.
+    if (data.customer_trial_days !== undefined) {
+      const n = Number(data.customer_trial_days);
+      if (!Number.isFinite(n) || n < 1 || n > 90) {
+        return res.status(400).json({ error: 'Trial length must be between 1 and 90 days' });
+      }
+      data.customer_trial_days = Math.floor(n);
+    }
+    if (data.customer_trial_price !== undefined) {
+      if (data.customer_trial_price === '' || data.customer_trial_price === null) {
+        data.customer_trial_price = null;
+      } else {
+        const n = Number(data.customer_trial_price);
+        if (!Number.isFinite(n) || n < 0) {
+          return res.status(400).json({ error: 'Trial price cannot be negative' });
+        }
+        data.customer_trial_price = n;
+      }
     }
 
     // Completion is a server-side timestamp rather than a client-supplied one:

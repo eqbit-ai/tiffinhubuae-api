@@ -53,6 +53,13 @@ model User {
   whatsapp_notifications_enabled Boolean?  @default(false)
   whatsapp_number                String?
   currency                       String?   @default("USD")
+
+  // The free trial this merchant offers their own customers. Distinct from
+  // trial_ends_at / subscription_status above, which are this merchant's own
+  // trial of TiffinHub - the two are unrelated and confusing them would expire
+  // the wrong thing.
+  customer_trial_days            Int?      @default(3)
+  customer_trial_price           Decimal?  @db.Decimal(10, 2)
   language                       String?   @default("en")
   timezone                       String?   @default("UTC")
   country                        String?

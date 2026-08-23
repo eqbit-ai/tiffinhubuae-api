@@ -61,7 +61,13 @@ router.post('/record-delivery', async (req: AuthRequest, res) => {
     }
 
     const newDeliveredDays = (customer.delivered_days || 0) + 1;
-    const paidDays = customer.paid_days || (customer.is_trial ? 3 : 30);
+    // paid_days is set when the trial starts, so this fallback is only for rows
+    // that predate it. It reads the merchant's own trial length rather than
+    // assuming three days.
+    const trialDays = customer.is_trial
+      ? (await prisma.user.findUnique({ where: { id: customer.created_by } }))?.customer_trial_days ?? 3
+      : 0;
+    const paidDays = customer.paid_days || (customer.is_trial ? trialDays : 30);
     const daysRemaining = paidDays - newDeliveredDays;
 
     await prisma.customer.update({
@@ -2297,13 +2303,16 @@ router.post('/approve-customer', async (req: AuthRequest, res) => {
       status: 'active',
     };
 
-    // If trial, set start/end dates now
+    // If trial, set start/end dates now, for however long this merchant's trial
+    // runs. trial_end_date is the customer's own snapshot of that: changing the
+    // account setting later must not move a trial already under way.
     if (customer.is_trial) {
+      const days = user.customer_trial_days ?? 3;
       updateData.start_date = new Date();
-      updateData.end_date = addDays(new Date(), 3);
-      updateData.trial_end_date = addDays(new Date(), 3);
-      updateData.paid_days = 3;
-      updateData.days_remaining = 3;
+      updateData.end_date = addDays(new Date(), days);
+      updateData.trial_end_date = addDays(new Date(), days);
+      updateData.paid_days = days;
+      updateData.days_remaining = days;
       updateData.delivered_days = 0;
       updateData.meals_delivered = 0;
     }
