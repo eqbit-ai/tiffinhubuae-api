@@ -9,6 +9,7 @@ import { customerAuthMiddleware, CustomerAuthRequest, generateCustomerToken } fr
 import { sendPushToUserByEmail } from '../services/pushNotification';
 import crypto from 'crypto';
 import { calculatePlatformFee } from '../lib/fees';
+import { validateAttributeValues } from '../lib/tiffinAttributes';
 
 const router = Router();
 
@@ -1104,10 +1105,22 @@ router.get('/join/:merchantId', async (req: Request, res: Response) => {
     const merchant = await prisma.user.findUnique({ where: { id: req.params.merchantId as string } });
     if (!merchant) return res.status(404).json({ error: 'Merchant not found' });
 
+    // What this merchant puts in a tiffin, so the public form can offer it
+    // instead of the hardcoded Roti / Rice / Diet it used to show. Only the
+    // ones flagged for the portal: a merchant may track something internally
+    // that a customer has no business choosing.
+    const attributes = await prisma.tiffinAttribute.findMany({
+      where: { created_by: merchant.id, is_active: true, show_on_portal: true },
+      orderBy: { sort_order: 'asc' },
+    });
+
     res.json({
       business_name: merchant.business_name || 'Tiffin Service',
       currency: merchant.currency || 'USD',
       payment_account_connected: merchant.payment_account_connected && merchant.payment_verification_status === 'verified',
+      trial_days: merchant.customer_trial_days ?? 3,
+      trial_price: merchant.customer_trial_price == null ? null : Number(merchant.customer_trial_price),
+      attributes,
     });
   } catch (error: any) {
     res.status(500).json({ error: safeError(error) });
@@ -1120,10 +1133,21 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
     const merchant = await prisma.user.findUnique({ where: { id: req.params.merchantId as string } });
     if (!merchant) return res.status(404).json({ error: 'Merchant not found' });
 
-    const { full_name, phone_number, address, area, meal_type, roti_quantity, rice_type, dietary_preference, special_notes, registration_type } = req.body;
+    const { full_name, phone_number, address, area, meal_type, roti_quantity, rice_type, dietary_preference, special_notes, registration_type, attribute_values } = req.body;
 
     if (!full_name || !phone_number) {
       return res.status(400).json({ error: 'Name and phone number are required' });
+    }
+
+    // Validated against the merchant who owns the link, exactly as the
+    // authenticated write path is. This endpoint takes input from the public,
+    // so unknown ids, wrong types and another merchant's attributes all have to
+    // bounce here rather than land in the blob.
+    let checkedValues: Record<string, unknown> | undefined;
+    if (attribute_values !== undefined) {
+      const checked = await validateAttributeValues(attribute_values, merchant.id);
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      checkedValues = checked.values;
     }
 
     // Check for duplicate phone
@@ -1153,6 +1177,7 @@ router.post('/join/:merchantId', async (req: Request, res: Response) => {
         special_notes: special_notes || null,
         status: 'pending_verification',
         active: false,
+        attribute_values: (checkedValues ?? undefined) as any,
         is_trial: isTrial,
         // The merchant's own trial length, snapshotted onto this customer.
         trial_end_date: isTrial ? addDays(new Date(), merchant.customer_trial_days ?? 3) : null,
