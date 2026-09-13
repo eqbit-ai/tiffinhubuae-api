@@ -58,18 +58,18 @@ model User {
   // trial_ends_at / subscription_status above, which are this merchant's own
   // trial of TiffinHub - the two are unrelated and confusing them would expire
   // the wrong thing.
-  customer_trial_days            Int?      @default(3)
-  customer_trial_price           Decimal?  @db.Decimal(10, 2)
-  language                       String?   @default("en")
-  timezone                       String?   @default("UTC")
-  country                        String?
-  brand_primary_color            String?   @default("#6366f1")
-  brand_accent_color             String?   @default("#f97316")
-  custom_domain                  String?
-  reset_token                    String?
-  reset_token_expires            DateTime?
-  is_super_admin                 Boolean   @default(false)
-  special_access_type            String?
+  customer_trial_days  Int?      @default(3)
+  customer_trial_price Decimal?  @db.Decimal(10, 2)
+  language             String?   @default("en")
+  timezone             String?   @default("UTC")
+  country              String?
+  brand_primary_color  String?   @default("#6366f1")
+  brand_accent_color   String?   @default("#f97316")
+  custom_domain        String?
+  reset_token          String?
+  reset_token_expires  DateTime?
+  is_super_admin       Boolean   @default(false)
+  special_access_type  String?
 
   // Onboarding. Held on the user rather than in the browser: a merchant who
   // signs up on their phone and opens the laptop must not start again.
@@ -132,6 +132,7 @@ model User {
   activityLogs     ActivityLog[]
   tiffinAttributes TiffinAttribute[]
   paymentLinks     PaymentLink[]
+  customerPeriods  CustomerPeriod[]
 
   @@index([google_id])
 }
@@ -163,7 +164,10 @@ model Customer {
   days_remaining       Int?      @default(30)
   meals_delivered      Int?      @default(0)
   tiffin_balance       Int?      @default(0)
-  roti_quantity        Int?      @default(2)
+  // 0, not 2. A customer created without this field has no roti recorded —
+  // defaulting to 2 put two rotis on every row that never mentioned them, and
+  // made a genuine choice of 2 indistinguishable from a default nobody made.
+  roti_quantity        Int?      @default(0)
   rice_type            String?   @default("None")
   special_notes        String?
   dietary_preference   String?   @default("Both")
@@ -195,11 +199,12 @@ model Customer {
 
   last_login_at DateTime?
 
-  creator       User           @relation(fields: [created_by], references: [id])
-  orders        Order[]
-  tiffinSkips   TiffinSkip[]
-  paymentLinks  PaymentLink[]
-  oneTimeOrders OneTimeOrder[]
+  creator         User             @relation(fields: [created_by], references: [id])
+  orders          Order[]
+  tiffinSkips     TiffinSkip[]
+  paymentLinks    PaymentLink[]
+  oneTimeOrders   OneTimeOrder[]
+  periods         CustomerPeriod[]
 
   @@index([created_by])
   @@index([is_deleted])
@@ -965,4 +970,58 @@ model SocialAtom {
   updated_at DateTime @updatedAt
 
   @@index([kind, is_active])
+}
+
+// One paid period of service — the unit the dashboard counts money in.
+//
+// A Customer row only ever holds its CURRENT period: renewing overwrites
+// start_date, end_date and payment_amount in place, so the period before it
+// stops existing anywhere in the database. That made past months unstable —
+// August's revenue silently dropped the moment an August customer renewed in
+// October, because the row that put them in August had been rewritten.
+// Each period is now its own row: appended on renewal, never rewritten by a
+// later one.
+//
+// Attribution rule (agreed with Saif 2026-09-02): a period counts, in full, in
+// the calendar month its start_date falls in. Never prorated, never split
+// across two months. A period running 31 Aug → 30 Sep belongs entirely to
+// August; its renewal starting 1 Oct belongs entirely to October, and
+// September gets nothing from that customer.
+model CustomerPeriod {
+  id          String @id @default(cuid())
+  created_by  String
+  customer_id String
+
+  // THE attribution field. The month this date falls in owns the whole amount.
+  // One rule for every period: signup and renewal are attributed identically.
+  start_date DateTime
+  end_date   DateTime?
+  paid_days  Int?
+
+  // Snapshotted, not looked up. `Customer.payment_amount` is what the customer
+  // costs *now*; a period has to keep what was actually charged then, or
+  // re-pricing a customer would rewrite months of past revenue.
+  amount Float @default(0)
+
+  // Paid | Pending | Trial | Cancelled. Deliberately never 'Expired': expiry is
+  // a lifecycle event, not a payment one, and letting it land here would erase
+  // revenue that was genuinely collected. syncCustomerPeriod enforces that.
+  payment_status String @default("Pending")
+
+  // signup | renewal | stripe | backfill — where the row came from.
+  source String @default("signup")
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  creator  User     @relation(fields: [created_by], references: [id])
+  customer Customer @relation(fields: [customer_id], references: [id])
+
+  // One period per customer per start date. This is what makes the write
+  // idempotent: saving a customer again updates the period already open at that
+  // start_date instead of appending a duplicate, while a renewal — which always
+  // moves start_date — necessarily appends a new one.
+  @@unique([customer_id, start_date])
+  @@index([created_by, start_date])
+  @@index([customer_id])
 }

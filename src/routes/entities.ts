@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { syncCustomerPeriod } from '../lib/customerPeriods';
 import { authMiddleware, checkActiveSubscription, AuthRequest } from '../middleware/auth';
 import { isWeekendDate, todayInTimezone } from '../lib/weekend';
 import { validateAttributeValues } from '../lib/tiffinAttributes';
@@ -160,6 +161,10 @@ const entityConfig: Record<string, {
   readOnly?: boolean;         // client may read but never write; server owns these
 }> = {
   customers: { model: () => prisma.customer, ownerField: 'created_by', ownerValue: 'id', softDelete: true },
+  // The revenue ledger. Read-only to clients on purpose: these rows are what
+  // makes a past month's total stable, so the only thing allowed to write them
+  // is syncCustomerPeriod, on the back of an actual customer save.
+  customer_periods: { model: () => prisma.customerPeriod, ownerField: 'created_by', ownerValue: 'id', readOnly: true },
   orders: { model: () => prisma.order, ownerField: 'created_by', ownerValue: 'id' },
   menu_items: { model: () => prisma.menuItem, ownerField: 'created_by', ownerValue: 'id' },
   tiffin_skips: { model: () => prisma.tiffinSkip, ownerField: 'created_by', ownerValue: 'id' },
@@ -204,16 +209,24 @@ function buildWhere(config: typeof entityConfig[string], user: AuthRequest['user
   delete where.created_by;
   delete where.user_email;
 
-  // Convert MongoDB-style operators to Prisma equivalents
+  // Convert MongoDB-style operators to Prisma equivalents.
+  //
+  // ALL operators present on a key are applied, not just the first one. This
+  // was an else-if chain, which silently dropped every operator after the
+  // earliest match in its own arbitrary order — so a two-sided range like
+  // { $gte: from, $lte: to } kept only the lower bound and quietly returned
+  // every row from `from` to the end of time.
+  const OPERATORS: Record<string, string> = {
+    $ne: 'not', $gt: 'gt', $gte: 'gte', $lt: 'lt', $lte: 'lte', $in: 'in',
+  };
   for (const key of Object.keys(where)) {
     if (where[key] && typeof where[key] === 'object' && !Array.isArray(where[key])) {
       const val = where[key];
-      if ('$ne' in val) { where[key] = { not: val.$ne }; }
-      else if ('$gt' in val) { where[key] = { gt: val.$gt }; }
-      else if ('$gte' in val) { where[key] = { gte: val.$gte }; }
-      else if ('$lt' in val) { where[key] = { lt: val.$lt }; }
-      else if ('$lte' in val) { where[key] = { lte: val.$lte }; }
-      else if ('$in' in val) { where[key] = { in: val.$in }; }
+      const mapped: any = {};
+      for (const [mongoOp, prismaOp] of Object.entries(OPERATORS)) {
+        if (mongoOp in val) mapped[prismaOp] = val[mongoOp];
+      }
+      if (Object.keys(mapped).length > 0) where[key] = mapped;
     }
   }
 
@@ -470,6 +483,20 @@ router.post('/:entity', authMiddleware, checkActiveSubscription, async (req: Aut
     }
 
     const record = await config.model().create({ data });
+
+    // A new customer opens their first paid period. Written here rather than
+    // derived later because a renewal overwrites start_date on this row, and
+    // once that happens nothing else remembers the period existed.
+    if (req.params.entity === 'customers') {
+      try {
+        await syncCustomerPeriod(record, { source: 'signup' });
+      } catch (e: any) {
+        // The customer is saved either way — a ledger failure must not lose the
+        // record the merchant just typed in. Loud, but not fatal.
+        console.error('[periods] signup sync failed:', e?.message?.slice(0, 200));
+      }
+    }
+
     res.status(201).json(addVirtualFields(record));
   } catch (error: any) {
     // A duplicate order is not an error — it is the same delivery being
@@ -556,11 +583,20 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
     }
 
     let updateData = { ...req.body };
+
+    // Intent marker, not a column. The Renew button and the Stripe renewal both
+    // move start_date, and so does a merchant fixing a typo in it — but the
+    // first two begin a new paid period and the third does not. Nothing in the
+    // row itself can tell them apart, so the caller says which it is.
+    const periodIntent = updateData.__period;
+    const previousStartDate = (existing as any)?.start_date;
+
     // Strip read-only / virtual / relation fields
     const stripFields = [
       'id', 'created_date', 'updated_date', 'created_by', 'created_at', 'updated_at',
       'creator', 'customer', 'customerRef', 'orders', 'tiffinSkips', 'paymentLinks',
       'ingredient', 'wastages', 'user_email', 'skipRecords', 'delivered_time',
+      '__period',
     ];
     for (const f of stripFields) delete updateData[f];
     sanitizeEmptyStrings(updateData);
@@ -600,6 +636,22 @@ router.put('/:entity/:id', authMiddleware, checkActiveSubscription, async (req: 
       }
     }
     console.log(`[PUT] ✓ ${entity}/${id} updated`);
+
+    // Keep the ledger in step. syncCustomerPeriod decides on its own whether
+    // this is a new period or an edit to the open one; passing the old
+    // start_date is what lets it move a corrected date instead of appending a
+    // second period for the same money.
+    if (entity === 'customers') {
+      try {
+        await syncCustomerPeriod(record, {
+          source: periodIntent === 'renewal' ? 'renewal' : undefined,
+          previousStartDate,
+        });
+      } catch (e: any) {
+        console.error('[periods] update sync failed:', e?.message?.slice(0, 200));
+      }
+    }
+
     res.json(addVirtualFields(record));
   } catch (error: any) {
     console.error(`[PUT] ✗ ${entity}/${id} error:`, error.message?.slice(0, 300));

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { syncCustomerPeriod } from '../lib/customerPeriods';
 import { stripe, STRIPE_WEBHOOK_SECRET } from '../services/stripe';
 import { sendEmail } from '../services/email';
 import { sendSMS } from '../services/sms';
@@ -80,6 +81,14 @@ router.post('/stripe', async (req: Request, res: Response) => {
                 // Still pending_verification until merchant approves
               },
             });
+
+            // First paid period. Starts today, which is the month it counts in.
+            await syncCustomerPeriod(
+              { id: customer.id, created_by: customer.created_by, start_date: new Date(),
+                end_date: addMonths(new Date(), 1), paid_days: 30, payment_amount: amount,
+                payment_status: 'Paid' },
+              { source: 'stripe' }
+            );
 
             await sendEmail({
               to: customerOwnerEmail,
@@ -207,6 +216,17 @@ router.post('/stripe', async (req: Request, res: Response) => {
               },
             });
 
+            // This renewal extends the customer's end_date instead of moving
+            // start_date, so the row alone would fold a second payment into the
+            // first period's month. The service being bought begins at baseDate
+            // — the day the old period runs out — and that is the period start.
+            await syncCustomerPeriod(
+              { id: customer.id, created_by: customer.created_by, start_date: baseDate,
+                end_date: newEndDate, paid_days: 30, payment_amount: amount,
+                payment_status: 'Paid' },
+              { source: 'stripe' }
+            );
+
             const endFormatted = format(newEndDate, 'dd MMM yyyy');
 
             if (customer.phone_number) {
@@ -288,6 +308,15 @@ router.post('/stripe', async (req: Request, res: Response) => {
               },
             });
 
+            // A renewal begins a new paid period. It counts, whole, in the month
+            // its start date falls in — never split with the month it ends in.
+            await syncCustomerPeriod(
+              { id: customer.id, created_by: customer.created_by, start_date: newStartDate,
+                end_date: newEndDate, paid_days: 30, payment_amount: amount,
+                payment_status: 'Paid' },
+              { source: 'stripe' }
+            );
+
             const endFormatted = format(newEndDate, 'dd MMM yyyy');
 
             if (customer.phone_number) {
@@ -364,6 +393,15 @@ router.post('/stripe', async (req: Request, res: Response) => {
                 days_remaining: 30,
               },
             });
+
+            // A renewal begins a new paid period. It counts, whole, in the month
+            // its start date falls in — never split with the month it ends in.
+            await syncCustomerPeriod(
+              { id: customer.id, created_by: customer.created_by, start_date: newStartDate,
+                end_date: newEndDate, paid_days: 30, payment_amount: amount,
+                payment_status: 'Paid' },
+              { source: 'stripe' }
+            );
 
             const endFormatted = format(newEndDate, 'dd MMM yyyy');
 
@@ -593,6 +631,15 @@ router.post('/stripe', async (req: Request, res: Response) => {
                     days_remaining: 30,
                   },
                 });
+
+                // A renewal begins a new paid period. It counts, whole, in the month
+                // its start date falls in — never split with the month it ends in.
+                await syncCustomerPeriod(
+                  { id: customer.id, created_by: customer.created_by, start_date: new Date(),
+                    end_date: newEndDate, paid_days: 30, payment_amount: amount,
+                    payment_status: 'Paid' },
+                  { source: 'stripe' }
+                );
               }
             }
           }
