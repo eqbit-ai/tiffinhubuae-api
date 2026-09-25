@@ -185,6 +185,12 @@ export async function runDeliveryPhotoCleanup() {
   return { photosCleared: cleaned, totalPhotos: items.length, locationsDeleted: locationResult.count };
 }
 
+/** Days left counting today and end_date, on UTC calendar dates. */
+export function daysLeftInclusive(endDate: Date, now: Date): number {
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.floor((new Date(endDate).getTime() - today) / (1000 * 60 * 60 * 24)) + 1;
+}
+
 /**
  * Daily customer maintenance.
  *
@@ -221,10 +227,11 @@ export async function runCustomerDaysMaintenance() {
   for (const customer of customers) {
     if (!customer.end_date) continue;
 
-    // Same calculation the Dashboard used: whole days until end_date.
-    const daysRemaining = Math.floor(
-      (new Date(customer.end_date).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
-    );
+    // Calendar days from today through end_date, both included — end_date is
+    // the last day served, so a 1–30 Sep plan has 30 days on 1 Sep and 1 on
+    // 30 Sep, and only goes inactive on 1 Oct. Measuring from `now` (05:00)
+    // instead of midnight used to dock a day and cut the last day off.
+    const daysRemaining = daysLeftInclusive(customer.end_date, now);
 
     const data: Record<string, any> = {};
 
